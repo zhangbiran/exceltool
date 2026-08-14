@@ -1,7 +1,7 @@
 # ExcelTool
 
 面向人和 AI Agent 的 `.xls/.xlsx` 命令行工具。它提供稳定的局部查看、二维
-JSON 批量写入、范围样式、sheet 和行结构操作，以及单工作簿事务式 patch，调用者
+JSON 批量写入、查找、范围样式、sheet/行/列结构操作，以及单工作簿事务式 patch，调用者
 无需为每次修改临时编写脚本。
 
 ## 环境与启动
@@ -155,7 +155,28 @@ Complex；结果仍完整报告三槽，便于识别 LibreOffice 的回退。`--
 
 `sheet list --json` stdout 直接输出 sheet 名称数组。
 
-## 行列定位与行操作
+## 查找
+
+默认在所有 sheet 的有效区域中，不区分大小写地查找显示值和公式：
+
+```bash
+./exceltool find --file book.xls --text "任务" --json
+```
+
+也可以限制 sheet、矩形范围和查找来源：
+
+```bash
+./exceltool find --file book.xls --text "A10*2" \
+  --sheet 任务 --range A1:K100 --look-in formulas \
+  --case-sensitive --limit 200 --json
+```
+
+`--look-in` 可取 `values`、`formulas` 或 `both`，默认 `both`；`--limit` 默认
+100。JSON 结果包含 `file`、`query`、`matches` 和 `truncated`，每条匹配包含
+`sheet`、`cell`、`display`、`formula` 和 `match_in`。当实际匹配超过上限时
+`truncated` 为 `true`，调用者应缩小范围或明确调大上限。
+
+## 行列定位与结构操作
 
 行使用从 1 开始的数字，列可以使用 Excel 字母。常用定位参数如下：
 
@@ -189,6 +210,54 @@ Complex；结果仍完整报告三槽，便于识别 LibreOffice 的回退。`--
 
 `row copy` 复制值、公式、样式和行高，并由 LibreOffice 按复制目标调整相对公式。
 JSON 管道只复制值及公式文本，不复制样式和行高。
+
+在 F 列前插入两列、删除 F～H 列：
+
+```bash
+./exceltool col insert --file book.xls --sheet Sheet1 \
+  --before F --count 2
+./exceltool col delete --file book.xls --sheet Sheet1 \
+  --cols F:H
+```
+
+复制 B～D 列并插入 F 列前：
+
+```bash
+./exceltool col copy --file book.xls --sheet Sheet1 \
+  --cols B:D --insert-before F
+```
+
+`col copy` 复制值、公式、样式和列宽，并由 LibreOffice 按目标位置调整相对公式。
+
+按内容自适应 A～F 列，并把每列最大宽度限制为 60 mm：
+
+```bash
+./exceltool col autofit --file book.xls --sheet Sheet1 \
+  --cols A:F --max-width-mm 60
+```
+
+`--max-width-mm` 默认 60，必须是有限的正数。自适应是显式操作；`write`、
+`row copy` 等命令不会隐式改变列宽，避免意外破坏既有版式。`.xls/.xlsx` 保存列宽
+时会按各自格式的单位量化，因此重开后的宽度允许不超过 0.1 mm 的格式舍入误差。
+
+`col autofit --json` 的 `changes.widths_mm` 保持原有简洁数组，同时
+`changes.columns` 按列报告计算宽度和保存后重开得到的实际宽度：
+
+```json
+{
+  "columns": [
+    {
+      "column": "A",
+      "width_mm": 18.4,
+      "actual_width_mm": 18.4
+    }
+  ]
+}
+```
+
+Patch 中每个 `col.autofit` 操作的结果也包含 `changes.columns`，并增加
+`final_column` 表示后续列结构操作完成后的最终列标。如果该列随后被删除，
+`final_column` 和 `actual_width_mm` 均为 `null`。
 
 ## 修改
 
@@ -229,7 +298,7 @@ JSON 管道只复制值及公式文本，不复制样式和行高。
 - 未提供的行尾单元格保持不变。
 - `=...` 写为公式；`'=...` 写为以 `=` 开头的普通文本。
 - JSON 公式文本原样写入，不自动平移引用；需要 Excel 相对引用调整时使用
-  `row copy`。
+  `row copy` 或 `col copy`。
 
 ### 三种数据输入
 
@@ -347,6 +416,10 @@ v1 对顶层和操作字段执行严格校验，未知字段会失败，以便�
 {"op":"row.insert","sheet":"任务","before":10,"count":1}
 {"op":"row.delete","sheet":"任务","rows":"10:12"}
 {"op":"row.copy","sheet":"任务","rows":"3:3","insert_before":10}
+{"op":"col.insert","sheet":"任务","before":"F","count":1}
+{"op":"col.delete","sheet":"任务","cols":"F:H"}
+{"op":"col.copy","sheet":"任务","cols":"B:D","insert_before":"F"}
+{"op":"col.autofit","sheet":"任务","cols":"A:F","max_width_mm":60}
 {"op":"sheet.add","name":"新配置"}
 {"op":"sheet.delete","sheet":"旧配置"}
 {"op":"sheet.rename","sheet":"旧名称","name":"新名称"}
@@ -361,6 +434,11 @@ v1 对顶层和操作字段执行严格校验，未知字段会失败，以便�
 - `clear.with_style` 默认 `false`。
 - `row.insert.count` 默认 `1`。
 - `row.copy` 复制值、公式、样式和行高，相对公式由 LibreOffice 调整。
+- `col.insert.count` 默认 `1`。
+- `col.copy` 复制值、公式、样式和列宽，相对公式由 LibreOffice 调整。
+- `col.autofit.max_width_mm` 默认 `60`，自适应后应用最大宽度限制。
+- Patch 的 `col.autofit` 成功项包含逐列 `width_mm`、`final_column` 和保存后
+  `actual_width_mm`，便于调用者进行数值比较。
 
 ### 执行与发布规则
 
@@ -369,7 +447,7 @@ v1 对顶层和操作字段执行严格校验，未知字段会失败，以便�
 - 全部操作在临时副本的同一个 LibreOffice 会话中完成。
 - 任一操作失败，临时副本被丢弃，不发布部分结果。
 - 全部操作完成后只保存一次，并只重新打开一次。
-- 重开后验证最终受影响的内容、公式、明确样式、行高和 sheet 结构。
+- 重开后验证最终受影响的内容、公式、明确样式、行高、列宽和 sheet 结构。
 - 验证成功后才原子替换输入文件或发布 `--out`。
 - 默认不创建 `.bak`；是否在执行前备份仍由调用者明确决定。
 

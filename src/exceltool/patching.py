@@ -6,7 +6,12 @@ from .errors import ExcelToolError, PatchOperationError, TargetError, Verificati
 from .fonts import inspect_font
 from .operations import (
     HARD_STYLE_PROPERTIES,
+    COLUMN_WIDTH_TOLERANCE,
     clear_range,
+    col_autofit,
+    col_copy,
+    col_delete,
+    col_insert,
     row_copy,
     row_delete,
     row_insert,
@@ -18,7 +23,7 @@ from .operations import (
     required_font_slots,
     write_matrix,
 )
-from .ranges import cell_range, cell_ref, column_name, row_range
+from .ranges import cell_range, cell_ref, col_range, column_name, column_number, row_range
 
 
 OPERATION_FIELDS = {
@@ -28,6 +33,10 @@ OPERATION_FIELDS = {
     "row.insert": {"id", "op", "sheet", "before", "count"},
     "row.delete": {"id", "op", "sheet", "rows"},
     "row.copy": {"id", "op", "sheet", "rows", "insert_before"},
+    "col.insert": {"id", "op", "sheet", "before", "count"},
+    "col.delete": {"id", "op", "sheet", "cols"},
+    "col.copy": {"id", "op", "sheet", "cols", "insert_before"},
+    "col.autofit": {"id", "op", "sheet", "cols", "max_width_mm"},
     "sheet.add": {"id", "op", "name"},
     "sheet.delete": {"id", "op", "sheet"},
     "sheet.rename": {"id", "op", "sheet", "name"},
@@ -41,6 +50,10 @@ REQUIRED_FIELDS = {
     "row.insert": {"op", "sheet", "before"},
     "row.delete": {"op", "sheet", "rows"},
     "row.copy": {"op", "sheet", "rows", "insert_before"},
+    "col.insert": {"op", "sheet", "before"},
+    "col.delete": {"op", "sheet", "cols"},
+    "col.copy": {"op", "sheet", "cols", "insert_before"},
+    "col.autofit": {"op", "sheet", "cols"},
     "sheet.add": {"op", "name"},
     "sheet.delete": {"op", "sheet"},
     "sheet.rename": {"op", "sheet", "name"},
@@ -85,6 +98,13 @@ def require_positive_integer(operation, field, default=None):
 def validate_font_size_value(value):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TargetError("font_size 必须是有限的正数")
+
+
+def validate_positive_number(value, field):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TargetError("%s 必须是有限的正数" % field)
+    if not math.isfinite(float(value)) or float(value) <= 0:
+        raise TargetError("%s 必须是有限的正数" % field)
     if not math.isfinite(float(value)) or float(value) <= 0:
         raise TargetError("font_size 必须是有限的正数")
 
@@ -165,6 +185,24 @@ def validate_operation(operation):
         require_string(normalized, "rows")
         row_range(normalized["rows"])
         require_positive_integer(normalized, "insert_before")
+    elif op == "col.insert":
+        require_string(normalized, "before")
+        column_number(normalized["before"])
+        require_positive_integer(normalized, "count", 1)
+    elif op == "col.delete":
+        require_string(normalized, "cols")
+        col_range(normalized["cols"])
+    elif op == "col.copy":
+        require_string(normalized, "cols")
+        col_range(normalized["cols"])
+        require_string(normalized, "insert_before")
+        column_number(normalized["insert_before"])
+    elif op == "col.autofit":
+        require_string(normalized, "cols")
+        col_range(normalized["cols"])
+        maximum = normalized.get("max_width_mm", 60.0)
+        validate_positive_number(maximum, "max_width_mm")
+        normalized["max_width_mm"] = float(maximum)
     return normalized
 
 
@@ -272,14 +310,17 @@ class VerificationPlan:
         self.full_sheets = set()
         self.cells = {}
         self.hard_default_cells = {}
+        self.width_columns = {}
+        self.width_reports = []
         self.last_by_cell = {}
+        self.last_by_column = {}
         self.last_by_sheet = {}
         self.last_structure = None
 
     def _touch(self, sheet, identity):
         self.last_by_sheet[sheet] = identity
 
-    def record(self, operation, index):
+    def record(self, operation, index, changes=None):
         identity = operation_identity(index, operation)
         op = operation["op"]
         sheet = operation.get("sheet")
@@ -318,6 +359,34 @@ class VerificationPlan:
                 self._copy_rows(sheet, start, end, operation["insert_before"] - 1)
             self.full_sheets.add(sheet)
             self.cells.pop(sheet, None)
+        elif op.startswith("col."):
+            if op == "col.insert":
+                before = column_number(operation["before"]) - 1
+                self._insert_cols(sheet, before, operation["count"])
+                affected = range(before, before + operation["count"])
+            elif op == "col.delete":
+                start, end = col_range(operation["cols"])
+                self._delete_cols(sheet, start, end)
+                affected = (start,)
+            elif op == "col.copy":
+                start, end = col_range(operation["cols"])
+                before = column_number(operation["insert_before"]) - 1
+                self._copy_cols(sheet, start, end, before)
+                affected = range(before, before + end - start)
+            else:
+                start, end = col_range(operation["cols"])
+                affected = range(start, end)
+                self.width_columns.setdefault(sheet, set()).update(affected)
+                for offset, col in enumerate(affected):
+                    self.width_reports.append({
+                        "sheet": sheet,
+                        "col": col,
+                        "item": changes["columns"][offset],
+                    })
+            for col in affected:
+                self.last_by_column.setdefault(sheet, {})[col] = identity
+            self.full_sheets.add(sheet)
+            self.cells.pop(sheet, None)
         elif op == "sheet.add":
             self.last_structure = identity
             self._touch(operation["name"], identity)
@@ -326,7 +395,13 @@ class VerificationPlan:
             self.full_sheets.discard(sheet)
             self.cells.pop(sheet, None)
             self.hard_default_cells.pop(sheet, None)
+            self.width_columns.pop(sheet, None)
             self.last_by_cell.pop(sheet, None)
+            self.last_by_column.pop(sheet, None)
+            for report in self.width_reports:
+                if report["sheet"] == sheet:
+                    report["sheet"] = None
+                    report["col"] = None
         elif op == "sheet.rename":
             self.last_structure = identity
             new_name = operation["name"]
@@ -339,6 +414,13 @@ class VerificationPlan:
                 self.hard_default_cells[new_name] = self.hard_default_cells.pop(sheet)
             if sheet in self.last_by_cell:
                 self.last_by_cell[new_name] = self.last_by_cell.pop(sheet)
+            if sheet in self.width_columns:
+                self.width_columns[new_name] = self.width_columns.pop(sheet)
+            if sheet in self.last_by_column:
+                self.last_by_column[new_name] = self.last_by_column.pop(sheet)
+            for report in self.width_reports:
+                if report["sheet"] == sheet:
+                    report["sheet"] = new_name
             self.last_by_sheet.pop(sheet, None)
             self._touch(new_name, identity)
         elif op == "sheet.copy":
@@ -348,6 +430,8 @@ class VerificationPlan:
                 self.hard_default_cells[operation["name"]] = set(
                     self.hard_default_cells[sheet]
                 )
+            if sheet in self.width_columns:
+                self.width_columns[operation["name"]] = set(self.width_columns[sheet])
             self._touch(operation["name"], identity)
 
     def _insert_rows(self, sheet, before, count):
@@ -407,12 +491,134 @@ class VerificationPlan:
             }
             self.last_by_cell[sheet].update(copied)
 
+    def _insert_cols(self, sheet, before, count):
+        for mapping in (self.cells, self.hard_default_cells):
+            if sheet in mapping:
+                mapping[sheet] = {
+                    (row, col + count if col >= before else col)
+                    for row, col in mapping[sheet]
+                }
+        if sheet in self.width_columns:
+            self.width_columns[sheet] = {
+                col + count if col >= before else col
+                for col in self.width_columns[sheet]
+            }
+        if sheet in self.last_by_cell:
+            self.last_by_cell[sheet] = {
+                (row, col + count if col >= before else col): identity
+                for (row, col), identity in self.last_by_cell[sheet].items()
+            }
+        if sheet in self.last_by_column:
+            self.last_by_column[sheet] = {
+                (col + count if col >= before else col): identity
+                for col, identity in self.last_by_column[sheet].items()
+            }
+        for report in self.width_reports:
+            if (
+                report["sheet"] == sheet
+                and report["col"] is not None
+                and report["col"] >= before
+            ):
+                report["col"] += count
+
+    def _delete_cols(self, sheet, start, end):
+        count = end - start
+        for mapping in (self.cells, self.hard_default_cells):
+            if sheet in mapping:
+                mapping[sheet] = {
+                    (row, col - count if col >= end else col)
+                    for row, col in mapping[sheet]
+                    if not start <= col < end
+                }
+        if sheet in self.width_columns:
+            self.width_columns[sheet] = {
+                col - count if col >= end else col
+                for col in self.width_columns[sheet]
+                if not start <= col < end
+            }
+        if sheet in self.last_by_cell:
+            self.last_by_cell[sheet] = {
+                (row, col - count if col >= end else col): identity
+                for (row, col), identity in self.last_by_cell[sheet].items()
+                if not start <= col < end
+            }
+        if sheet in self.last_by_column:
+            self.last_by_column[sheet] = {
+                (col - count if col >= end else col): identity
+                for col, identity in self.last_by_column[sheet].items()
+                if not start <= col < end
+            }
+        for report in self.width_reports:
+            if report["sheet"] != sheet or report["col"] is None:
+                continue
+            if start <= report["col"] < end:
+                report["col"] = None
+            elif report["col"] >= end:
+                report["col"] -= count
+
+    def _copy_cols(self, sheet, start, end, insert_before):
+        count = end - start
+        for mapping in (self.cells, self.hard_default_cells):
+            if sheet not in mapping:
+                continue
+            original = mapping[sheet]
+            copied = {
+                (row, insert_before + col - start)
+                for row, col in original
+                if start <= col < end
+            }
+            mapping[sheet] = {
+                (row, col + count if col >= insert_before else col)
+                for row, col in original
+            } | copied
+        if sheet in self.width_columns:
+            original = self.width_columns[sheet]
+            copied = {
+                insert_before + col - start for col in original if start <= col < end
+            }
+            self.width_columns[sheet] = {
+                col + count if col >= insert_before else col for col in original
+            } | copied
+        if sheet in self.last_by_cell:
+            original = self.last_by_cell[sheet]
+            copied = {
+                (row, insert_before + col - start): self.last_by_sheet[sheet]
+                for (row, col), identity in original.items()
+                if start <= col < end
+            }
+            self.last_by_cell[sheet] = {
+                (row, col + count if col >= insert_before else col): identity
+                for (row, col), identity in original.items()
+            }
+            self.last_by_cell[sheet].update(copied)
+        if sheet in self.last_by_column:
+            original = self.last_by_column[sheet]
+            copied = {
+                insert_before + col - start: self.last_by_sheet[sheet]
+                for col in original
+                if start <= col < end
+            }
+            self.last_by_column[sheet] = {
+                (col + count if col >= insert_before else col): identity
+                for col, identity in original.items()
+            }
+            self.last_by_column[sheet].update(copied)
+        for report in self.width_reports:
+            if (
+                report["sheet"] == sheet
+                and report["col"] is not None
+                and report["col"] >= insert_before
+            ):
+                report["col"] += count
+
     def snapshot(self, workbook):
         names = workbook.sheet_names()
         snapshots = {}
         for sheet_name in self.full_sheets:
             if sheet_name in names:
-                snapshots[sheet_name] = full_sheet_snapshot(workbook, sheet_name)
+                snapshots[sheet_name] = full_sheet_snapshot(
+                    workbook, sheet_name, self.width_columns.get(sheet_name, set())
+                )
         for sheet_name, targets in self.cells.items():
             if sheet_name in names and sheet_name not in self.full_sheets:
                 sheet = workbook.sheet(sheet_name)
@@ -435,11 +641,21 @@ class VerificationPlan:
             try:
                 verify_sheet_snapshot(reopened, sheet_name, sheet_snapshot)
             except SheetVerificationError as exc:
-                identity = self.last_by_cell.get(sheet_name, {}).get(
-                    (exc.row, exc.col),
-                    self.last_by_sheet.get(sheet_name, self.last_operation()),
-                )
+                identity = self.last_by_cell.get(sheet_name, {}).get((exc.row, exc.col))
+                if identity is None and exc.col is not None:
+                    identity = self.last_by_column.get(sheet_name, {}).get(exc.col)
+                if identity is None:
+                    identity = self.last_by_sheet.get(sheet_name, self.last_operation())
                 raise PatchOperationError(exc.message, exc.code, identity)
+        for report in self.width_reports:
+            item = report["item"]
+            if report["sheet"] is None or report["col"] is None:
+                item["final_column"] = None
+                item["actual_width_mm"] = None
+                continue
+            item["final_column"] = column_name(report["col"] + 1)
+            actual = reopened.sheet(report["sheet"]).Columns.getByIndex(report["col"]).Width
+            item["actual_width_mm"] = round(actual / 100.0, 2)
 
     def last_operation(self):
         identities = list(self.last_by_sheet.values())
@@ -448,12 +664,16 @@ class VerificationPlan:
         return max(identities, key=lambda item: item["index"]) if identities else {"index": 0}
 
 
-def full_sheet_snapshot(workbook, sheet_name):
+def full_sheet_snapshot(workbook, sheet_name, extra_columns=()):
     sheet = workbook.sheet(sheet_name)
     rows, columns = workbook.used_size(sheet)
     return {
         "size": (rows, columns),
         "row_heights": [sheet.Rows.getByIndex(row).Height for row in range(rows)],
+        "column_widths": {
+            col: sheet.Columns.getByIndex(col).Width
+            for col in range(max([columns] + [col + 1 for col in extra_columns]))
+        },
         "cells": {
             (row, col): cell_expectation(sheet.getCellByPosition(col, row))
             for row in range(rows)
@@ -472,6 +692,12 @@ def verify_sheet_snapshot(workbook, sheet_name, expected):
             if abs(sheet.Rows.getByIndex(row).Height - height) > 2:
                 raise SheetVerificationError(
                     "patch 行高验证失败: %s!%d" % (sheet_name, row + 1), row=row
+                )
+        for col, width in expected["column_widths"].items():
+            if abs(sheet.Columns.getByIndex(col).Width - width) > COLUMN_WIDTH_TOLERANCE:
+                raise SheetVerificationError(
+                    "patch 列宽验证失败: %s!%s"
+                    % (sheet_name, column_name(col + 1)), col=col
                 )
     for (row, col), signature in expected["cells"].items():
         cell = sheet.getCellByPosition(col, row)
@@ -521,13 +747,30 @@ def execute_operation(workbook, operation):
         return row_copy(
             workbook, operation["sheet"], operation["rows"], operation["insert_before"]
         )
+    if op == "col.insert":
+        return col_insert(
+            workbook, operation["sheet"], operation["before"], operation["count"]
+        )
+    if op == "col.delete":
+        return col_delete(workbook, operation["sheet"], operation["cols"])
+    if op == "col.copy":
+        return col_copy(
+            workbook, operation["sheet"], operation["cols"], operation["insert_before"]
+        )
+    if op == "col.autofit":
+        return col_autofit(
+            workbook, operation["sheet"], operation["cols"],
+            operation["max_width_mm"],
+        )
     if op == "sheet.add":
         return sheet_add(workbook, operation["name"])
     if op == "sheet.delete":
         return sheet_delete(workbook, operation["sheet"])
     if op == "sheet.rename":
         return sheet_rename(workbook, operation["sheet"], operation["name"])
-    return sheet_copy(workbook, operation["sheet"], operation["name"])
+    if op == "sheet.copy":
+        return sheet_copy(workbook, operation["sheet"], operation["name"])
+    raise TargetError("不支持的 patch 操作: %s" % op)
 
 
 def patch_operation(document):
@@ -539,12 +782,14 @@ def patch_operation(document):
         summary_sheets = []
         for index, operation in enumerate(operations):
             try:
-                execute_operation(workbook, operation)
-                plan.record(operation, index)
+                operation_changes, _ = execute_operation(workbook, operation)
+                plan.record(operation, index, operation_changes)
             except Exception as exc:
                 raise operation_error(index, operation, exc)
             result = operation_identity(index, operation)
             result["verified"] = True
+            if operation["op"] == "col.autofit":
+                result["changes"] = operation_changes
             results.append(result)
             for name in operation_sheet_names(operation):
                 if name not in summary_sheets:

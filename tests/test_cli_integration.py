@@ -13,13 +13,14 @@ ROOT = Path(__file__).resolve().parents[1]
 TEST_FONT = "Microsoft YaHei"
 
 
-def create_fixture(path):
+def create_fixture(path, extra_sheet=False):
     with LibreOfficeSession() as session:
         workbook = session.create()
         try:
             sheet = workbook.sheet(workbook.sheet_names()[0])
             sheet.Name = "Data"
             sheet.Rows.getByIndex(1).Height = 800
+            sheet.Columns.getByIndex(1).Width = 4200
             values = (
                 ("ID", "Name", "Double"),
                 (1, "Alpha", "=A2*2"),
@@ -39,6 +40,9 @@ def create_fixture(path):
             sheet.getCellRangeByName("D2").String = "=literal"
             sheet.getCellRangeByName("E2").Formula = "=TRUE()"
             sheet.getCellRangeByName("F4").String = "KEEP"
+            if extra_sheet:
+                workbook.document.Sheets.insertNewByName("Extra", 1)
+                workbook.sheet("Extra").getCellRangeByName("A1").String = "Alpha Extra"
             workbook.save_as(path)
         finally:
             workbook.close()
@@ -205,6 +209,138 @@ class CliIntegrationTests(unittest.TestCase):
                     self.assertEqual(sheet.getCellRangeByName("B4").CharWeight, 150.0)
 
                 self.inspect(copied, assert_copy)
+
+    def test_column_operations_and_autofit_for_both_formats(self):
+        for extension in (".xlsx", ".xls"):
+            with self.subTest(extension=extension):
+                source = self.directory / ("columns" + extension)
+                inserted = self.directory / ("columns-inserted" + extension)
+                deleted = self.directory / ("columns-deleted" + extension)
+                copied = self.directory / ("columns-copied" + extension)
+                fitted = self.directory / ("columns-fitted" + extension)
+                create_fixture(source)
+
+                self.run_cli(
+                    "col", "insert", "--file", str(source), "--sheet", "Data",
+                    "--before", "B", "--count", "1", "--out", str(inserted), "--json",
+                )
+                self.inspect(
+                    inserted,
+                    lambda book: self.assertEqual(
+                        book.sheet("Data").getCellRangeByName("C2").String, "Alpha"
+                    ),
+                )
+                self.run_cli(
+                    "col", "delete", "--file", str(inserted), "--sheet", "Data",
+                    "--cols", "B:B", "--out", str(deleted), "--json",
+                )
+                self.run_cli(
+                    "col", "copy", "--file", str(deleted), "--sheet", "Data",
+                    "--cols", "B:C", "--insert-before", "F", "--out", str(copied),
+                    "--json",
+                )
+
+                def assert_copy(workbook):
+                    sheet = workbook.sheet("Data")
+                    self.assertEqual(sheet.getCellRangeByName("F2").String, "Alpha")
+                    self.assertEqual(sheet.getCellRangeByName("G2").Formula, "=E2*2")
+                    self.assertEqual(sheet.getCellRangeByName("F2").CharWeight, 150.0)
+                    self.assertLessEqual(
+                        abs(
+                            sheet.Columns.getByIndex(5).Width
+                            - sheet.Columns.getByIndex(1).Width
+                        ),
+                        10,
+                    )
+
+                self.inspect(copied, assert_copy)
+                result = self.run_cli(
+                    "col", "autofit", "--file", str(copied), "--sheet", "Data",
+                    "--cols", "F:G", "--max-width-mm", "10", "--out", str(fitted),
+                    "--json",
+                )
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["changes"]["max_width_mm"], 10.0)
+                self.assertEqual(
+                    [item["column"] for item in payload["changes"]["columns"]],
+                    ["F", "G"],
+                )
+                self.assertEqual(
+                    payload["changes"]["widths_mm"],
+                    [item["width_mm"] for item in payload["changes"]["columns"]],
+                )
+                self.assertTrue(all(
+                    "actual_width_mm" in item
+                    and abs(item["actual_width_mm"] - item["width_mm"]) <= 0.1
+                    for item in payload["changes"]["columns"]
+                ))
+                self.inspect(
+                    fitted,
+                    lambda book: self.assertTrue(
+                        all(
+                            book.sheet("Data").Columns.getByIndex(col).Width <= 1010
+                            for col in (5, 6)
+                        )
+                    ),
+                )
+
+        invalid = self.directory / "invalid-autofit.xlsx"
+        invalid_output = self.directory / "invalid-autofit-out.xlsx"
+        create_fixture(invalid)
+        result = self.run_cli(
+            "col", "autofit", "--file", str(invalid), "--sheet", "Data",
+            "--cols", "A", "--max-width-mm", "0", "--out", str(invalid_output),
+            "--json", expected=3,
+        )
+        self.assertIn("有限的正数", result.stderr)
+        self.assertFalse(invalid_output.exists())
+
+    def test_find_values_formulas_ranges_and_limits(self):
+        for extension in (".xlsx", ".xls"):
+            with self.subTest(extension=extension):
+                source = self.directory / ("find" + extension)
+                create_fixture(source, extra_sheet=True)
+
+                values = self.run_cli(
+                    "find", "--file", str(source), "--text", "alpha", "--json"
+                )
+                value_payload = json.loads(values.stdout)
+                self.assertEqual(value_payload["matches"][0]["cell"], "B2")
+                self.assertEqual(value_payload["matches"][0]["match_in"], ["values"])
+                self.assertEqual(
+                    [(match["sheet"], match["cell"]) for match in value_payload["matches"]],
+                    [("Data", "B2"), ("Extra", "A1")],
+                )
+                self.assertFalse(value_payload["truncated"])
+
+                formulas = self.run_cli(
+                    "find", "--file", str(source), "--text", "A2*2", "--sheet", "Data",
+                    "--range", "C2:C2", "--look-in", "formulas", "--json",
+                )
+                formula_match = json.loads(formulas.stdout)["matches"][0]
+                self.assertEqual(formula_match["formula"], "=A2*2")
+                self.assertEqual(formula_match["match_in"], ["formulas"])
+
+                sensitive = self.run_cli(
+                    "find", "--file", str(source), "--text", "alpha",
+                    "--case-sensitive", "--json",
+                )
+                self.assertEqual(json.loads(sensitive.stdout)["matches"], [])
+                limited = self.run_cli(
+                    "find", "--file", str(source), "--text", "=", "--look-in",
+                    "formulas", "--limit", "1", "--json",
+                )
+                limited_payload = json.loads(limited.stdout)
+                self.assertEqual(len(limited_payload["matches"]), 1)
+                self.assertTrue(limited_payload["truncated"])
+
+        source = self.directory / "find-invalid.xlsx"
+        create_fixture(source)
+        invalid = self.run_cli(
+            "find", "--file", str(source), "--text", "Alpha", "--limit", "0",
+            "--json", expected=3,
+        )
+        self.assertIn("正整数", invalid.stderr)
 
     def test_unexpected_uno_error_has_stable_boundary(self):
         source = self.directory / "invalid-name.xlsx"
@@ -592,6 +728,66 @@ class CliIntegrationTests(unittest.TestCase):
         })
         self.assertFalse(font_payload["published"])
         self.assertFalse(font_output.exists())
+
+    def test_patch_v1_column_operations_use_live_coordinates(self):
+        for extension in (".xlsx", ".xls"):
+            with self.subTest(extension=extension):
+                source = self.directory / ("patch-columns-source" + extension)
+                output = self.directory / ("patch-columns-output" + extension)
+                patch_file = self.directory / ("patch-columns-" + extension[1:] + ".json")
+                create_fixture(source)
+                patch_file.write_text(
+                    json.dumps({
+                        "version": 1,
+                        "operations": [
+                            {
+                                "id": "insert-col", "op": "col.insert", "sheet": "Data",
+                                "before": "B", "count": 1,
+                            },
+                            {
+                                "id": "write-live", "op": "write", "sheet": "Data",
+                                "begin": "B2", "values": [["Inserted"]],
+                            },
+                            {
+                                "id": "copy-col", "op": "col.copy", "sheet": "Data",
+                                "cols": "B:B", "insert_before": "F",
+                            },
+                            {
+                                "id": "delete-col", "op": "col.delete", "sheet": "Data",
+                                "cols": "B:B",
+                            },
+                            {
+                                "id": "fit-col", "op": "col.autofit", "sheet": "Data",
+                                "cols": "E:E", "max_width_mm": 10,
+                            },
+                            {
+                                "id": "shift-fitted-col", "op": "col.insert",
+                                "sheet": "Data", "before": "A", "count": 1,
+                            },
+                        ],
+                    }),
+                    encoding="utf-8",
+                )
+                result = self.run_cli(
+                    "patch", "--file", str(source), "--patch", str(patch_file),
+                    "--out", str(output), "--json",
+                )
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["summary"]["operation_count"], 6)
+                self.assertTrue(payload["summary"]["saved_once"])
+                fit_changes = payload["operations"][4]["changes"]
+                self.assertEqual(fit_changes["columns"][0]["column"], "E")
+                self.assertEqual(fit_changes["columns"][0]["final_column"], "F")
+                self.assertLessEqual(fit_changes["columns"][0]["actual_width_mm"], 10.1)
+
+                def assert_patch(workbook):
+                    sheet = workbook.sheet("Data")
+                    self.assertEqual(sheet.getCellRangeByName("C2").String, "Alpha")
+                    self.assertEqual(sheet.getCellRangeByName("D2").Formula, "=B2*2")
+                    self.assertEqual(sheet.getCellRangeByName("F2").String, "Inserted")
+                    self.assertLessEqual(sheet.Columns.getByIndex(5).Width, 1010)
+
+                self.inspect(output, assert_patch)
 
 
 if __name__ == "__main__":

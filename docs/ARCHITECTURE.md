@@ -13,7 +13,7 @@ LibreOffice 和 `python3-uno`。代价是存在外部进程依赖，保存时也
 
 - `cli.py`：命令、参数、JSON、退出码。
 - `engine.py`：启动隔离 LibreOffice、UNO 连接、工作簿读写与低层操作。
-- `operations.py`：查看、单元格、sheet 和行的用户语义。
+- `operations.py`：查看、查找、单元格、sheet、行和列的用户语义。
 - `fonts.py`：通过 fontconfig 精确检查请求字体与系统解析字体。
 - `editing.py`：临时副本、原子发布和写后验证。
 - `patching.py`：Patch v1 严格校验、顺序分派、失败定位和最终状态验证计划。
@@ -41,7 +41,16 @@ Patch 复用同一写入流程，但第 4 步在一个 workbook 实例上按数�
 操作。操作完成后生成最终验证计划；计划只比较稳定的逻辑契约，不比较
 LibreOffice 保存时可能规范化的内部直接样式表示。行操作和 sheet 复制验证最终
 内容、公式、有效样式与行高，明确样式和硬样式清除验证目标单元格，sheet 名称及
-顺序验证结构。整个 patch 仍只调用一次 `save` 和一次只读重开。
+顺序验证结构；列操作还验证最终列宽。`.xls/.xlsx` 的列宽存储单位不同，重开验证
+允许 0.1 mm 的格式量化误差。整个 patch 仍只调用一次 `save` 和一次只读重开。
+
+列宽自适应通过 UNO `OptimalWidth` 计算后立即施加毫米上限，只在显式
+`col autofit` 或 `col.autofit` patch 操作中发生。`find` 只读遍历选定 sheet 的
+有效区域或显式范围，不修改、保存或发布工作簿。
+
+列宽 JSON 同时保留操作时的 `width_mm` 和重开后的 `actual_width_mm`。Patch 的
+验证计划会跟踪后续列插入、删除和复制造成的坐标移动，通过 `final_column` 报告
+最终位置；已被后续操作删除的列用 `null` 明确表示，不伪造实际宽度。
 
 ## 故障
 

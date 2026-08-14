@@ -11,6 +11,11 @@ from .patching import load_patch, operation_error, patch_operation
 from .operations import (
     clear_range,
     clear_cell,
+    col_autofit,
+    col_copy,
+    col_delete,
+    col_insert,
+    find_cells,
     row_copy,
     row_delete,
     row_insert,
@@ -155,6 +160,38 @@ def build_parser():
     row_copy_parser.add_argument("--insert-before", type=int, required=True)
     add_edit_output(row_copy_parser)
 
+    col = commands.add_parser("col", help="列结构和宽度编辑")
+    col_commands = col.add_subparsers(dest="col_command", required=True)
+    col_insert_parser = col_commands.add_parser("insert", help="在指定列前插入空列")
+    add_file_sheet(col_insert_parser)
+    col_insert_parser.add_argument("--before", required=True, help="目标列，如 F 或 AA")
+    col_insert_parser.add_argument("--count", type=int, default=1)
+    add_edit_output(col_insert_parser)
+    col_delete_parser = col_commands.add_parser("delete", help="删除列范围")
+    add_file_sheet(col_delete_parser)
+    col_delete_parser.add_argument("--cols", required=True, help="列范围，如 F:H")
+    add_edit_output(col_delete_parser)
+    col_copy_parser = col_commands.add_parser("copy", help="复制列并在目标列前插入")
+    add_file_sheet(col_copy_parser)
+    col_copy_parser.add_argument("--cols", required=True, help="源列范围，如 B:D")
+    col_copy_parser.add_argument("--insert-before", required=True, help="目标列，如 F")
+    add_edit_output(col_copy_parser)
+    col_autofit_parser = col_commands.add_parser("autofit", help="自适应列宽并限制最大宽度")
+    add_file_sheet(col_autofit_parser)
+    col_autofit_parser.add_argument("--cols", required=True, help="列范围，如 A:F")
+    col_autofit_parser.add_argument("--max-width-mm", type=float, default=60.0)
+    add_edit_output(col_autofit_parser)
+
+    find = commands.add_parser("find", help="在工作簿中查找值或公式")
+    find.add_argument("--file", required=True)
+    find.add_argument("--text", required=True)
+    find.add_argument("--sheet")
+    find.add_argument("--range", dest="cell_range")
+    find.add_argument("--look-in", choices=("values", "formulas", "both"), default="both")
+    find.add_argument("--case-sensitive", action="store_true")
+    find.add_argument("--limit", type=int, default=100)
+    add_json(find)
+
     font = commands.add_parser("font", help="字体环境检查")
     font_commands = font.add_subparsers(dest="font_command", required=True)
     font_check = font_commands.add_parser("check", help="检查字体能否精确匹配")
@@ -286,6 +323,36 @@ def run_font_check(args):
     return result
 
 
+def run_find(args):
+    path = validate_input(args.file)
+    with LibreOfficeSession() as session:
+        workbook = session.load(path, read_only=True)
+        try:
+            matches, truncated = find_cells(
+                workbook, args.text, args.sheet, args.cell_range, args.look_in,
+                args.case_sensitive, args.limit,
+            )
+        finally:
+            workbook.close()
+    result = {
+        "file": str(path),
+        "query": args.text,
+        "matches": matches,
+        "truncated": truncated,
+    }
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        for match in matches:
+            locations = ",".join(match["match_in"])
+            print("%s!%s [%s] %s" % (
+                match["sheet"], match["cell"], locations, match["display"]
+            ))
+        if truncated:
+            print("结果已截断；使用 --limit 调整上限")
+    return result
+
+
 def run_edit(args):
     font_check = None
     requested_font = getattr(args, "font", None)
@@ -336,7 +403,7 @@ def run_edit(args):
         else:
             operation_name = "sheet.copy"
             operation = lambda book: sheet_copy(book, args.sheet, args.name)
-    else:
+    elif args.command == "row":
         if args.row_command == "insert":
             operation_name = "row.insert"
             operation = lambda book: row_insert(book, args.sheet, args.before, args.count)
@@ -346,6 +413,21 @@ def run_edit(args):
         else:
             operation_name = "row.copy"
             operation = lambda book: row_copy(book, args.sheet, args.rows, args.insert_before)
+    else:
+        if args.col_command == "insert":
+            operation_name = "col.insert"
+            operation = lambda book: col_insert(book, args.sheet, args.before, args.count)
+        elif args.col_command == "delete":
+            operation_name = "col.delete"
+            operation = lambda book: col_delete(book, args.sheet, args.cols)
+        elif args.col_command == "copy":
+            operation_name = "col.copy"
+            operation = lambda book: col_copy(book, args.sheet, args.cols, args.insert_before)
+        else:
+            operation_name = "col.autofit"
+            operation = lambda book: col_autofit(
+                book, args.sheet, args.cols, args.max_width_mm
+            )
     result = edit_file(
         args.file, args.out, args.overwrite, operation
     )
@@ -397,6 +479,8 @@ def main(argv=None):
             run_sheet_list(args)
         elif args.command == "font" and args.font_command == "check":
             run_font_check(args)
+        elif args.command == "find":
+            run_find(args)
         else:
             run_edit(args)
         return 0

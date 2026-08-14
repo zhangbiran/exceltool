@@ -1,7 +1,7 @@
 import math
 
 from .errors import TargetError, VerificationError
-from .ranges import cell_range, cell_ref, column_name, resolve_window, row_range
+from .ranges import cell_range, cell_ref, col_range, column_name, column_number, resolve_window, row_range
 
 
 HARD_STYLE_PROPERTIES = (
@@ -17,6 +17,11 @@ HARD_STYLE_PROPERTIES = (
     "CellBackColor",
     "NumberFormat",
 )
+
+# Calc and OOXML quantize column widths through different storage units. The
+# round-trip delta is normally a few 1/100 mm even when the logical width is
+# unchanged.
+COLUMN_WIDTH_TOLERANCE = 10
 
 
 def validate_font_size(font_size):
@@ -65,6 +70,38 @@ def cell_style(cell):
 
 def content_signature(cell):
     return cell.Type.value, cell.String, cell.Formula, float(cell.Value)
+
+
+def column_operation_snapshot(workbook, sheet_name):
+    sheet = workbook.sheet(sheet_name)
+    rows, columns = workbook.used_size(sheet)
+    return {
+        "size": (rows, columns),
+        "values": [
+            [workbook.json_value(sheet.getCellByPosition(col, row)) for col in range(columns)]
+            for row in range(rows)
+        ],
+        "widths": [sheet.Columns.getByIndex(col).Width for col in range(columns)],
+    }
+
+
+def verify_column_operation_snapshot(workbook, sheet_name, expected, operation):
+    sheet = workbook.sheet(sheet_name)
+    if tuple(workbook.used_size(sheet)) != tuple(expected["size"]):
+        raise VerificationError("%s写后范围验证失败: %s" % (operation, sheet_name))
+    for row, values in enumerate(expected["values"]):
+        for col, value in enumerate(values):
+            if workbook.json_value(sheet.getCellByPosition(col, row)) != value:
+                raise VerificationError(
+                    "%s写后内容验证失败: %s!%s%d"
+                    % (operation, sheet_name, column_name(col + 1), row + 1)
+                )
+    for col, width in enumerate(expected["widths"]):
+        if abs(sheet.Columns.getByIndex(col).Width - width) > COLUMN_WIDTH_TOLERANCE:
+            raise VerificationError(
+                "%s写后列宽验证失败: %s!%s"
+                % (operation, sheet_name, column_name(col + 1))
+            )
 
 
 def read_sheet(workbook, sheet_name, options):
@@ -541,3 +578,180 @@ def row_copy(workbook, sheet_name, rows, insert_before):
                 raise VerificationError("复制行高度写后验证失败")
 
     return {"sheet": sheet_name, "rows": rows, "insert_before": insert_before}, verify
+
+
+def col_insert(workbook, sheet_name, before, count):
+    if count < 1:
+        raise TargetError("列数量必须为正整数")
+    target = column_number(before) - 1
+    sheet = workbook.sheet(sheet_name)
+    sheet.Columns.insertByIndex(target, count)
+    expected = column_operation_snapshot(workbook, sheet_name)
+
+    def verify(reopened):
+        verify_column_operation_snapshot(reopened, sheet_name, expected, "插入列")
+
+    return {"sheet": sheet_name, "before": before.upper(), "count": count}, verify
+
+
+def col_delete(workbook, sheet_name, cols):
+    start, end = col_range(cols)
+    count = end - start
+    sheet = workbook.sheet(sheet_name)
+    sheet.Columns.removeByIndex(start, count)
+    expected = column_operation_snapshot(workbook, sheet_name)
+
+    def verify(reopened):
+        verify_column_operation_snapshot(reopened, sheet_name, expected, "删除列")
+
+    return {"sheet": sheet_name, "cols": cols.upper()}, verify
+
+
+def col_copy(workbook, sheet_name, cols, insert_before):
+    start, end = col_range(cols)
+    count = end - start
+    target = column_number(insert_before) - 1
+    if start < target < end:
+        raise TargetError("复制目标列不能位于源列范围内部")
+    sheet = workbook.sheet(sheet_name)
+    max_rows, _ = workbook.used_size(sheet)
+    source_formulas = [
+        [sheet.getCellByPosition(col, row).Formula for col in range(start, end)]
+        for row in range(max_rows)
+    ]
+    widths = [sheet.Columns.getByIndex(col).Width for col in range(start, end)]
+    sheet.Columns.insertByIndex(target, count)
+    adjusted_start = start + count if target <= start else start
+    source_range = sheet.getCellRangeByPosition(
+        adjusted_start, 0, adjusted_start + count - 1, max_rows - 1
+    )
+    destination = sheet.getCellByPosition(target, 0).CellAddress
+    sheet.copyRange(destination, source_range.RangeAddress)
+    for offset, width in enumerate(widths):
+        sheet.Columns.getByIndex(target + offset).Width = width
+    expected = column_operation_snapshot(workbook, sheet_name)
+
+    def verify(reopened):
+        verify_column_operation_snapshot(reopened, sheet_name, expected, "复制列")
+        target_sheet = reopened.sheet(sheet_name)
+        for row, source_row in enumerate(source_formulas):
+            for offset, source_value in enumerate(source_row):
+                copied_cell = target_sheet.getCellByPosition(target + offset, row)
+                if not str(source_value).startswith("=") and copied_cell.Formula != source_value:
+                    raise VerificationError("复制列写后验证失败: %s!%s" % (sheet_name, cols))
+                source_cell = target_sheet.getCellByPosition(adjusted_start + offset, row)
+                if copy_style_signature(copied_cell) != copy_style_signature(source_cell):
+                    raise VerificationError("复制列样式验证失败: %s!%s" % (sheet_name, cols))
+        for offset, width in enumerate(widths):
+            actual = target_sheet.Columns.getByIndex(target + offset).Width
+            if abs(actual - width) > COLUMN_WIDTH_TOLERANCE:
+                raise VerificationError("复制列宽度验证失败: %s!%s" % (sheet_name, cols))
+
+    return {
+        "sheet": sheet_name,
+        "cols": cols.upper(),
+        "insert_before": insert_before.upper(),
+    }, verify
+
+
+def col_autofit(workbook, sheet_name, cols, max_width_mm=60.0):
+    try:
+        max_width_mm = float(max_width_mm)
+    except (TypeError, ValueError):
+        raise TargetError("最大列宽必须是有限的正数")
+    if not math.isfinite(max_width_mm) or max_width_mm <= 0:
+        raise TargetError("最大列宽必须是有限的正数")
+    start, end = col_range(cols)
+    sheet = workbook.sheet(sheet_name)
+    maximum = int(round(max_width_mm * 100))
+    widths = []
+    for col in range(start, end):
+        column = sheet.Columns.getByIndex(col)
+        column.OptimalWidth = True
+        if column.Width > maximum:
+            column.Width = maximum
+        widths.append(column.Width)
+
+    changes = {
+        "sheet": sheet_name,
+        "cols": cols.upper(),
+        "max_width_mm": max_width_mm,
+        "widths_mm": [round(width / 100.0, 2) for width in widths],
+        "columns": [
+            {
+                "column": column_name(start + offset + 1),
+                "width_mm": round(width / 100.0, 2),
+            }
+            for offset, width in enumerate(widths)
+        ],
+    }
+
+    def verify(reopened):
+        target_sheet = reopened.sheet(sheet_name)
+        for offset, width in enumerate(widths):
+            actual = target_sheet.Columns.getByIndex(start + offset).Width
+            if (
+                actual > maximum + COLUMN_WIDTH_TOLERANCE
+                or abs(actual - width) > COLUMN_WIDTH_TOLERANCE
+            ):
+                raise VerificationError(
+                    "自适应列宽验证失败: %s!%s"
+                    % (sheet_name, column_name(start + offset + 1))
+                )
+            changes["columns"][offset]["actual_width_mm"] = round(actual / 100.0, 2)
+
+    return changes, verify
+
+
+def find_cells(workbook, text, sheet_name=None, range_value=None, look_in="both",
+               case_sensitive=False, limit=100):
+    if not text:
+        raise TargetError("find --text 不能为空")
+    if limit < 1:
+        raise TargetError("find --limit 必须是正整数")
+    names = workbook.sheet_names()
+    if sheet_name:
+        if sheet_name not in names:
+            raise TargetError("未找到 sheet: %s" % sheet_name)
+        names = [sheet_name]
+    needle = text if case_sensitive else text.casefold()
+    matches = []
+    truncated = False
+    for name in names:
+        sheet = workbook.sheet(name)
+        max_rows, max_cols = workbook.used_size(sheet)
+        if range_value:
+            start_row, end_row, start_col, end_col = cell_range(
+                range_value if ":" in range_value else "%s:%s" % (range_value, range_value)
+            )
+            end_row = min(end_row, max_rows)
+            end_col = min(end_col, max_cols)
+        else:
+            start_row, end_row, start_col, end_col = 0, max_rows, 0, max_cols
+        for row in range(start_row, end_row):
+            for col in range(start_col, end_col):
+                cell = sheet.getCellByPosition(col, row)
+                display = cell.String
+                formula = cell.Formula if cell.Type.value == "FORMULA" else None
+                matched = []
+                if look_in in ("values", "both"):
+                    haystack = display if case_sensitive else display.casefold()
+                    if needle in haystack:
+                        matched.append("values")
+                if look_in in ("formulas", "both") and formula is not None:
+                    haystack = formula if case_sensitive else formula.casefold()
+                    if needle in haystack:
+                        matched.append("formulas")
+                if not matched:
+                    continue
+                if len(matches) >= limit:
+                    truncated = True
+                    return matches, truncated
+                matches.append({
+                    "sheet": name,
+                    "cell": "%s%d" % (column_name(col + 1), row + 1),
+                    "display": display,
+                    "formula": formula,
+                    "match_in": matched,
+                })
+    return matches, truncated
