@@ -86,8 +86,8 @@ class CliIntegrationTests(unittest.TestCase):
     def test_view_compatibility_and_errors(self):
         xlsx = self.directory / "view.xlsx"
         xls = self.directory / "view.xls"
-        create_fixture(xlsx)
-        create_fixture(xls)
+        create_fixture(xlsx, extra_sheet=True)
+        create_fixture(xls, extra_sheet=True)
         for path in (xlsx, xls):
             with self.subTest(path=path.suffix):
                 result = self.run_cli(
@@ -124,12 +124,15 @@ class CliIntegrationTests(unittest.TestCase):
                 )
                 self.assertEqual(json.loads(oversized_tail.stdout)["range"], "A1:C4")
 
-        nested = self.directory / "nested"
-        nested.mkdir()
-        nested_xls = nested / xls.name
-        xls.replace(nested_xls)
-        scanned = self.run_cli("view", "--dir", str(self.directory), "--recursive", "--range", "A1:A1", "--json-full")
-        self.assertEqual(len(json.loads(scanned.stdout)["workbooks"]), 2)
+        multiple = self.run_cli(
+            "view", "--file", str(xlsx), "--range", "A1:A1", "--json-full"
+        )
+        multiple_payload = json.loads(multiple.stdout)
+        self.assertEqual(multiple_payload["file"], str(xlsx.resolve()))
+        self.assertEqual(
+            [sheet["sheet"] for sheet in multiple_payload["sheets"]],
+            ["Data", "Extra"],
+        )
 
         missing = self.run_cli(
             "view", "--file", str(xlsx), "--sheet", "Missing", "--json", expected=3
@@ -146,16 +149,26 @@ class CliIntegrationTests(unittest.TestCase):
             "--json-full", expected=3,
         )
         self.assertIn("正整数", invalid_tail.stderr)
+        removed_directory = self.run_cli(
+            "view", "--file", str(xlsx), "--dir", str(self.directory),
+            "--json-full", expected=2,
+        )
+        self.assertIn("unrecognized arguments", removed_directory.stderr)
+        removed_value_mode = self.run_cli(
+            "view", "--file", str(xlsx), "--value-mode", "raw",
+            "--json-full", expected=2,
+        )
+        self.assertIn("unrecognized arguments", removed_value_mode.stderr)
 
-    def test_cell_edit_style_clear_and_default_original_for_both_formats(self):
+    def test_single_cell_write_style_clear_and_default_original_for_both_formats(self):
         for extension in (".xlsx", ".xls"):
             with self.subTest(extension=extension):
-                source = self.directory / ("cell" + extension)
-                output = self.directory / ("cell-edited" + extension)
+                source = self.directory / ("single-cell" + extension)
+                output = self.directory / ("single-cell-edited" + extension)
                 create_fixture(source)
                 result = self.run_cli(
-                    "cell", "set", "--file", str(source), "--sheet", "Data", "--cell", "B2",
-                    "--value", "测试", "--type", "string", "--font", TEST_FONT, "--font-size", "14",
+                    "write", "--file", str(source), "--sheet", "Data", "--begin", "B2",
+                    '[["测试"]]', "--font", TEST_FONT, "--font-size", "14",
                     "--out", str(output), "--json",
                 )
                 self.assertTrue(json.loads(result.stdout)["verified"])
@@ -168,12 +181,34 @@ class CliIntegrationTests(unittest.TestCase):
                     self.assertEqual(sheet.getCellRangeByName("B4").String, "Sentinel")
 
                 self.inspect(output, assert_edit)
-                number_output = self.directory / ("cell-number" + extension)
-                bool_output = self.directory / ("cell-bool" + extension)
-                formula_output = self.directory / ("cell-formula" + extension)
-                self.run_cli("cell", "set", "--file", str(output), "--sheet", "Data", "--cell", "A2", "--value", "42.5", "--type", "number", "--out", str(number_output), "--json")
-                self.run_cli("cell", "set", "--file", str(number_output), "--sheet", "Data", "--cell", "B2", "--value", "true", "--type", "bool", "--out", str(bool_output), "--json")
-                self.run_cli("cell", "set", "--file", str(bool_output), "--sheet", "Data", "--cell", "C2", "--value", "A2*3", "--type", "formula", "--out", str(formula_output), "--json")
+                styled_output = self.directory / ("single-styled" + extension)
+                style_result = self.run_cli(
+                    "style", "--file", str(output), "--sheet", "Data", "--range", "D2",
+                    "--font-size", "15", "--out", str(styled_output), "--json",
+                )
+                self.assertTrue(json.loads(style_result.stdout)["verified"])
+
+                def assert_single_style(workbook):
+                    target = workbook.sheet("Data").getCellRangeByName("D2")
+                    self.assertEqual(target.String, "=literal")
+                    self.assertAlmostEqual(target.CharHeightAsian, 15.0)
+
+                self.inspect(styled_output, assert_single_style)
+                number_output = self.directory / ("single-number" + extension)
+                bool_output = self.directory / ("single-bool" + extension)
+                formula_output = self.directory / ("single-formula" + extension)
+                self.run_cli(
+                    "write", "--file", str(styled_output), "--sheet", "Data", "--begin", "A2",
+                    "[[42.5]]", "--out", str(number_output), "--json",
+                )
+                self.run_cli(
+                    "write", "--file", str(number_output), "--sheet", "Data", "--begin", "B2",
+                    "[[true]]", "--out", str(bool_output), "--json",
+                )
+                self.run_cli(
+                    "write", "--file", str(bool_output), "--sheet", "Data", "--begin", "C2",
+                    '[["=A2*3"]]', "--out", str(formula_output), "--json",
+                )
 
                 def assert_types(workbook):
                     sheet = workbook.sheet("Data")
@@ -184,7 +219,7 @@ class CliIntegrationTests(unittest.TestCase):
 
                 self.inspect(formula_output, assert_types)
                 self.run_cli(
-                    "cell", "clear", "--file", str(formula_output), "--sheet", "Data", "--cell", "B2", "--json"
+                    "clear", "--file", str(formula_output), "--sheet", "Data", "--range", "B2", "--json"
                 )
                 self.assertFalse(Path(str(formula_output) + ".bak").exists())
 
@@ -195,8 +230,8 @@ class CliIntegrationTests(unittest.TestCase):
 
                 self.inspect(formula_output, assert_clear)
                 exists = self.run_cli(
-                    "cell", "set", "--file", str(source), "--sheet", "Data", "--cell", "A2", "--value", "9",
-                    "--type", "number", "--out", str(output), "--json", expected=3,
+                    "write", "--file", str(source), "--sheet", "Data", "--begin", "A2", "[[9]]",
+                    "--out", str(output), "--json", expected=3,
                 )
                 self.assertNotIn("Traceback", exists.stderr)
 
@@ -459,10 +494,13 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
 
     def test_argument_error_is_json_when_requested(self):
-        result = self.run_cli("cell", "set", "--json", expected=2)
+        result = self.run_cli("write", "--json", expected=2)
         payload = json.loads(result.stderr)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["code"], 2)
+
+        removed_cell = self.run_cli("cell", "set", "--json", expected=2)
+        self.assertIn("invalid choice", json.loads(removed_cell.stderr)["error"])
 
     def test_practical_json_write_style_clear_and_sheet_copy(self):
         for extension in (".xlsx", ".xls"):
@@ -552,7 +590,7 @@ class CliIntegrationTests(unittest.TestCase):
 
                 self.inspect(cleared, assert_clear_preserves_style)
                 self.run_cli(
-                    "clear", "--file", str(styled), "--sheet", "Data", "--range", "A2:B2", "--with-style",
+                    "clear", "--file", str(styled), "--sheet", "Data", "--range", "A2:B2", "--clear-style",
                     "--out", str(cleared_style), "--json",
                 )
                 self.inspect(
@@ -600,9 +638,24 @@ class CliIntegrationTests(unittest.TestCase):
         direct = self.run_cli("view", "--file", str(source), "--range", "A1:A1", "--json", expected=3)
         self.assertIn("明确指定", direct.stderr)
         directory = self.run_cli(
-            "view", "--dir", str(self.directory), "--sheet", "Data", "--range", "A1:A1", "--json", expected=3
+            "view", "--dir", str(self.directory), "--sheet", "Data", "--range", "A1:A1", "--json", expected=2
         )
-        self.assertIn("一个 --file", directory.stderr)
+        self.assertIn("required", directory.stderr)
+        repeated_file = self.run_cli(
+            "view", "--file", str(source), "--file", str(source), "--sheet", "Data",
+            "--json", expected=2,
+        )
+        self.assertIn("只能指定一次", repeated_file.stderr)
+        obsolete_clear_style = self.run_cli(
+            "clear", "--file", str(source), "--sheet", "Data", "--range", "A1",
+            "--with-style", "--json", expected=2,
+        )
+        self.assertIn("unrecognized arguments", obsolete_clear_style.stderr)
+        obsolete_sheet = self.run_cli(
+            "sheet", "add", "--file", str(source), "--sheet", "Data", "--name", "New",
+            "--json", expected=2,
+        )
+        self.assertIn("unrecognized arguments", obsolete_sheet.stderr)
         invalid_size = self.run_cli(
             "style", "--file", str(source), "--sheet", "Data", "--range", "A1", "--font-size", "nan",
             "--out", str(output), "--json", expected=3,

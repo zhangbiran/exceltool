@@ -201,18 +201,7 @@ class Workbook:
         address = cursor.RangeAddress
         return address.EndRow + 1, address.EndColumn + 1
 
-    def display_value(self, cell, mode="display"):
-        if mode == "formula":
-            return cell.Formula
-        if mode == "raw":
-            cell_type = cell.Type.value
-            if cell_type == "VALUE":
-                return cell.Value
-            if cell_type == "TEXT":
-                return cell.String
-            if cell_type == "FORMULA":
-                return cell.Formula
-            return ""
+    def display_value(self, cell):
         return cell.String
 
     def json_value(self, cell):

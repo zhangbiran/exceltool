@@ -98,12 +98,7 @@ make check-skill-docs \
 ./exceltool view --file book.xlsx --sheet Sheet1 --from C3 --n 5
 ```
 
-目录和多文件的人类表格输出：
-
-```bash
-./exceltool view --file a.xls --file b.xlsx --range A1:F10
-./exceltool view --dir ./excels --recursive --range A1:F10
-```
+一次 `view` 只处理一个工作簿；需要查看多个文件时，应先明确文件清单，再逐个调用。
 
 ### 可回写的纯 JSON
 
@@ -135,8 +130,8 @@ make check-skill-docs \
 ./exceltool view --file book.xls --sheet Sheet1 --range A1:C3 --json-full
 ```
 
-单目标输出包含 `file`、`sheet`、`range`、`begin` 和 `values`。多文件或未指定
-sheet 时，`--json-full` 使用 `workbooks/sheets` 包装结构。
+指定一个 sheet 时，输出包含 `file`、`sheet`、`range`、`begin` 和 `values`；省略
+sheet 时输出 `{file, sheets}`，每个 sheet 独立包含范围和 values。
 
 需要独立检查字体和字号时增加 `--include-style`：
 
@@ -216,6 +211,7 @@ Complex；结果仍完整报告三槽，便于识别 LibreOffice 的回退。`--
 --tail 20        有效区域最后 20 行
 --cols A:F       A～F 列
 --range B2:F10   矩形范围
+--from C3 --n 5  从 C3 开始的 5×5 正方区域
 --begin AA3      AA 列第 3 行
 ```
 
@@ -390,25 +386,30 @@ stdin 与 view 管道：
 
 ```bash
 ./exceltool clear --file book.xls --sheet Sheet1 --range B3:F10 \
-  --with-style
+  --clear-style
 ```
 
-### 单元格编辑
-
-设置单元格的值、类型、字体或字号：
+范围参数也可以是单个单元格。单格写入继续使用统一的二维 JSON：
 
 ```bash
-./exceltool cell set --file book.xls --sheet Sheet1 --cell B3 \
-  --value "完成" --type string --font "微软雅黑" --font-size 12
+./exceltool write --file book.xls --sheet Sheet1 --begin B3 \
+  '[["完成"]]'
+```
+
+写入数值、布尔值、公式并同时设置字体字号：
+
+```bash
+./exceltool write --file book.xls --sheet Sheet1 --begin B3 \
+  '[[100,true,"=A1*2"]]' --font "微软雅黑" --font-size 12
 ```
 
 清空单元格内容并保留样式：
 
 ```bash
-./exceltool cell clear --file book.xls --sheet Sheet1 --cell B3
+./exceltool clear --file book.xls --sheet Sheet1 --range B3
 ```
 
-范围命令处理单个单元格时，也可以写成 `--range B3`。
+单格样式也使用 `style --range B3`。工具不再维护另一套 `cell` 命令和类型参数。
 
 ## 事务式 Patch
 

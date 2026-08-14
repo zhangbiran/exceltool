@@ -3,6 +3,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import __version__
 from .editing import edit_file, validate_input
 from .engine import LibreOfficeSession
 from .errors import ExcelToolError, TargetError
@@ -10,7 +11,6 @@ from .fonts import inspect_font
 from .patching import load_patch, operation_error, patch_operation
 from .operations import (
     clear_range,
-    clear_cell,
     col_autofit,
     col_copy,
     col_delete,
@@ -19,7 +19,6 @@ from .operations import (
     row_copy,
     row_delete,
     row_insert,
-    set_cell,
     sheet_add,
     sheet_copy,
     sheet_delete,
@@ -44,6 +43,13 @@ class ExcelToolArgumentParser(argparse.ArgumentParser):
         super().error(message)
 
 
+class StoreOnce(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error("%s 只能指定一次" % option_string)
+        setattr(namespace, self.dest, values)
+
+
 def add_json(parser):
     parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
 
@@ -55,8 +61,12 @@ def add_edit_output(parser):
 
 
 def add_file_sheet(parser, sheet_required=True):
-    parser.add_argument("--file", required=True, help="输入 .xls/.xlsx 文件")
+    parser.add_argument("--file", required=True, action=StoreOnce, help="输入 .xls/.xlsx 文件")
     parser.add_argument("--sheet", required=sheet_required, help="sheet 名")
+
+
+def add_file(parser):
+    parser.add_argument("--file", required=True, action=StoreOnce, help="输入 .xls/.xlsx 文件")
 
 
 def add_window_selection(parser):
@@ -92,16 +102,13 @@ def window_options(args):
 
 def build_parser():
     parser = ExcelToolArgumentParser(prog="exceltool", description="查看和局部编辑 .xls/.xlsx")
-    parser.add_argument("--version", action="version", version="exceltool 0.1.0")
+    parser.add_argument("--version", action="version", version="exceltool %s" % __version__)
     commands = parser.add_subparsers(dest="command", required=True)
 
     view = commands.add_parser("view", help="查看工作簿局部区域")
-    view.add_argument("--file", action="append", default=[], help="文件路径，可重复")
-    view.add_argument("--dir", help="扫描目录中的 .xls/.xlsx")
-    view.add_argument("-r", "--recursive", action="store_true", help="递归扫描目录")
+    add_file(view)
     view.add_argument("--sheet", help="sheet 名；省略则查看全部")
     add_window_selection(view)
-    view.add_argument("--value-mode", choices=("display", "raw", "formula"), default="display")
     view.add_argument("--include-style", action="store_true", help="在 --json-full 中包含字体和字号")
     view_json = view.add_mutually_exclusive_group()
     view_json.add_argument("--json", action="store_true", help="输出可回写的纯二维 JSON 数组")
@@ -113,82 +120,67 @@ def build_parser():
     write.add_argument("data", nargs="?", help="二维 JSON 数组")
     write.add_argument("--stdin", action="store_true", help="从标准输入读取二维 JSON")
     write.add_argument("--values-file", help="从 UTF-8 JSON 文件读取二维数组")
-    write.add_argument("--font")
-    write.add_argument("--font-size", type=float)
+    write.add_argument("--font", help="写入位置的字体名称")
+    write.add_argument("--font-size", type=float, help="写入位置的字号")
     add_edit_output(write)
 
     patch = commands.add_parser("patch", help="顺序执行一个工作簿的 JSON 操作批次")
-    patch.add_argument("--file", required=True, help="输入 .xls/.xlsx 文件")
+    add_file(patch)
     patch.add_argument("--patch", required=True, help="UTF-8 patch JSON 文件")
     add_edit_output(patch)
 
     style = commands.add_parser("style", help="设置范围字体和字号")
     add_file_sheet(style)
-    style.add_argument("--range", required=True, dest="cell_range")
-    style.add_argument("--font")
-    style.add_argument("--font-size", type=float)
+    style.add_argument("--range", required=True, dest="cell_range", help="范围或单元格，如 A1:F10 或 B3")
+    style.add_argument("--font", help="字体名称")
+    style.add_argument("--font-size", type=float, help="字号")
     add_edit_output(style)
 
     clear = commands.add_parser("clear", help="清空范围内容")
     add_file_sheet(clear)
-    clear.add_argument("--range", required=True, dest="cell_range")
-    clear.add_argument("--with-style", action="store_true", help="同时清除硬样式")
+    clear.add_argument("--range", required=True, dest="cell_range", help="范围或单元格，如 B3:F10 或 B3")
+    clear.add_argument("--clear-style", action="store_true", help="同时清除硬样式")
     add_edit_output(clear)
 
-    cell = commands.add_parser("cell", help="单元格编辑")
-    cell_commands = cell.add_subparsers(dest="cell_command", required=True)
-    cell_set = cell_commands.add_parser("set", help="设置单元格值或字体")
-    add_file_sheet(cell_set)
-    cell_set.add_argument("--cell", required=True)
-    cell_set.add_argument("--value")
-    cell_set.add_argument("--type", choices=("string", "number", "bool", "formula"), default="string")
-    cell_set.add_argument("--font")
-    cell_set.add_argument("--font-size", type=float)
-    add_edit_output(cell_set)
-    cell_clear = cell_commands.add_parser("clear", help="清空单元格内容并保留样式")
-    add_file_sheet(cell_clear)
-    cell_clear.add_argument("--cell", required=True)
-    add_edit_output(cell_clear)
-
-    sheet = commands.add_parser("sheet", help="sheet 编辑")
+    sheet = commands.add_parser("sheet", help="sheet 查看和编辑")
     sheet_commands = sheet.add_subparsers(dest="sheet_command", required=True)
     sheet_list_parser = sheet_commands.add_parser("list", help="列出 sheet")
-    sheet_list_parser.add_argument("--file", required=True)
+    add_file(sheet_list_parser)
     add_json(sheet_list_parser)
     sheet_info_parser = sheet_commands.add_parser("info", help="查看 sheet 有效范围和行列数")
     add_file_sheet(sheet_info_parser, sheet_required=False)
     add_json(sheet_info_parser)
     sheet_add_parser = sheet_commands.add_parser("add", help="新增 sheet")
-    add_file_sheet(sheet_add_parser, sheet_required=False)
-    sheet_add_parser.add_argument("--name", required=True)
+    add_file(sheet_add_parser)
+    sheet_add_parser.add_argument("--name", required=True, help="新 sheet 名")
     add_edit_output(sheet_add_parser)
     sheet_delete_parser = sheet_commands.add_parser("delete", help="删除 sheet")
     add_file_sheet(sheet_delete_parser)
     add_edit_output(sheet_delete_parser)
     sheet_rename_parser = sheet_commands.add_parser("rename", help="重命名 sheet")
     add_file_sheet(sheet_rename_parser)
-    sheet_rename_parser.add_argument("--name", required=True)
+    sheet_rename_parser.add_argument("--name", required=True, help="新 sheet 名")
     add_edit_output(sheet_rename_parser)
     sheet_copy_parser = sheet_commands.add_parser("copy", help="复制 sheet")
     add_file_sheet(sheet_copy_parser)
-    sheet_copy_parser.add_argument("--name", required=True)
+    sheet_copy_parser.add_argument("--name", required=True, help="副本 sheet 名")
     add_edit_output(sheet_copy_parser)
 
     row = commands.add_parser("row", help="行结构编辑")
     row_commands = row.add_subparsers(dest="row_command", required=True)
     row_insert_parser = row_commands.add_parser("insert", help="在指定行前插入空行")
     add_file_sheet(row_insert_parser)
-    row_insert_parser.add_argument("--before", type=int, required=True)
-    row_insert_parser.add_argument("--count", type=int, default=1)
+    row_insert_parser.add_argument("--before", type=int, required=True, help="在该行号之前插入")
+    row_insert_parser.add_argument("--count", type=int, default=1, help="插入行数，默认 1")
     add_edit_output(row_insert_parser)
     row_delete_parser = row_commands.add_parser("delete", help="删除行范围")
     add_file_sheet(row_delete_parser)
-    row_delete_parser.add_argument("--rows", required=True)
+    row_delete_parser.add_argument("--rows", required=True, help="删除行范围，如 3:5")
     add_edit_output(row_delete_parser)
     row_copy_parser = row_commands.add_parser("copy", help="复制行并在目标行前插入")
     add_file_sheet(row_copy_parser)
-    row_copy_parser.add_argument("--rows", required=True)
-    row_copy_parser.add_argument("--insert-before", type=int, required=True)
+    row_copy_parser.add_argument("--rows", required=True, help="源行范围，如 3:5")
+    row_copy_parser.add_argument("--insert-before", type=int, required=True, help="将副本插入该行之前")
     add_edit_output(row_copy_parser)
 
     col = commands.add_parser("col", help="列结构和宽度编辑")
@@ -196,7 +188,7 @@ def build_parser():
     col_insert_parser = col_commands.add_parser("insert", help="在指定列前插入空列")
     add_file_sheet(col_insert_parser)
     col_insert_parser.add_argument("--before", required=True, help="目标列，如 F 或 AA")
-    col_insert_parser.add_argument("--count", type=int, default=1)
+    col_insert_parser.add_argument("--count", type=int, default=1, help="插入列数，默认 1")
     add_edit_output(col_insert_parser)
     col_delete_parser = col_commands.add_parser("delete", help="删除列范围")
     add_file_sheet(col_delete_parser)
@@ -205,22 +197,22 @@ def build_parser():
     col_copy_parser = col_commands.add_parser("copy", help="复制列并在目标列前插入")
     add_file_sheet(col_copy_parser)
     col_copy_parser.add_argument("--cols", required=True, help="源列范围，如 B:D")
-    col_copy_parser.add_argument("--insert-before", required=True, help="目标列，如 F")
+    col_copy_parser.add_argument("--insert-before", required=True, help="将副本插入该列之前，如 F")
     add_edit_output(col_copy_parser)
     col_autofit_parser = col_commands.add_parser("autofit", help="自适应列宽并限制最大宽度")
     add_file_sheet(col_autofit_parser)
     col_autofit_parser.add_argument("--cols", required=True, help="列范围，如 A:F")
-    col_autofit_parser.add_argument("--max-width-mm", type=float, default=60.0)
+    col_autofit_parser.add_argument("--max-width-mm", type=float, default=60.0, help="最大列宽毫米数，默认 60")
     add_edit_output(col_autofit_parser)
 
     find = commands.add_parser("find", help="在工作簿中查找值或公式")
-    find.add_argument("--file", required=True)
-    find.add_argument("--text", required=True)
-    find.add_argument("--sheet")
+    add_file(find)
+    find.add_argument("--text", required=True, help="查找文本")
+    find.add_argument("--sheet", help="sheet 名；省略则查找全部")
     add_window_selection(find)
-    find.add_argument("--look-in", choices=("values", "formulas", "both"), default="both")
-    find.add_argument("--case-sensitive", action="store_true")
-    find.add_argument("--limit", type=int, default=100)
+    find.add_argument("--look-in", choices=("values", "formulas", "both"), default="both", help="查找显示值、公式或两者，默认 both")
+    find.add_argument("--case-sensitive", action="store_true", help="区分大小写")
+    find.add_argument("--limit", type=int, default=100, help="最大结果数，默认 100")
     add_json(find)
 
     font = commands.add_parser("font", help="字体环境检查")
@@ -232,53 +224,30 @@ def build_parser():
     return parser
 
 
-def view_paths(args):
-    paths = [Path(item) for item in args.file]
-    if args.dir:
-        directory = Path(args.dir)
-        if not directory.is_dir():
-            raise TargetError("目录不存在: %s" % directory)
-        iterator = directory.rglob("*") if args.recursive else directory.iterdir()
-        paths.extend(path for path in iterator if path.is_file() and path.suffix.lower() in (".xls", ".xlsx"))
-    unique = []
-    seen = set()
-    for path in paths:
-        resolved = validate_input(path)
-        if resolved not in seen:
-            unique.append(resolved)
-            seen.add(resolved)
-    if not unique:
-        raise TargetError("至少指定一个 --file 或 --dir")
-    return sorted(unique, key=lambda path: str(path))
-
-
 def run_view(args):
     if args.include_style and not args.json_full:
         raise TargetError("--include-style 必须与 --json-full 一起使用")
     options = window_options(args)
     options.update({
-        "value_mode": args.value_mode,
         "json_values": args.json or args.json_full,
         "include_style": args.include_style,
     })
-    paths = view_paths(args)
-    if args.json and (len(args.file) != 1 or args.dir or len(paths) != 1 or not args.sheet):
-        raise TargetError("view --json 必须明确指定一个 --file 和一个 --sheet；多目标请使用 --json-full")
-    results = []
+    path = validate_input(args.file)
+    if args.json and not args.sheet:
+        raise TargetError("view --json 必须明确指定一个 --sheet；多 sheet 请使用 --json-full")
     with LibreOfficeSession() as session:
-        for path in paths:
-            workbook = session.load(path, read_only=True)
-            try:
-                results.append({"file": str(path), "sheets": view_workbook(workbook, args.sheet, options)})
-            finally:
-                workbook.close()
+        workbook = session.load(path, read_only=True)
+        try:
+            sheets = view_workbook(workbook, args.sheet, options)
+        finally:
+            workbook.close()
     if args.json:
-        print(json.dumps(results[0]["sheets"][0]["values"], ensure_ascii=False, indent=2))
+        print(json.dumps(sheets[0]["values"], ensure_ascii=False, indent=2))
     elif args.json_full:
-        if len(results) == 1 and len(results[0]["sheets"]) == 1:
-            sheet = results[0]["sheets"][0]
+        if len(sheets) == 1:
+            sheet = sheets[0]
             payload = {
-                "file": results[0]["file"],
+                "file": str(path),
                 "sheet": sheet["sheet"],
                 "range": sheet["range"],
                 "begin": (
@@ -290,19 +259,18 @@ def run_view(args):
             if "styles" in sheet:
                 payload["styles"] = sheet["styles"]
         else:
-            payload = {"workbooks": results}
+            payload = {"file": str(path), "sheets": sheets}
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
-        for result in results:
-            print("\n========== %s ==========" % result["file"])
-            for sheet in result["sheets"]:
-                print("\n--- Sheet: %s ---" % sheet["sheet"])
-                if sheet["range"] is None:
-                    print("(所选范围内没有可显示内容)")
-                    continue
-                print("范围: %s" % sheet["range"])
-                print(render_table(sheet["values"], sheet["row_start"], sheet["col_start"]))
-    return {"ok": True, "workbooks": results}
+        print("\n========== %s ==========" % path)
+        for sheet in sheets:
+            print("\n--- Sheet: %s ---" % sheet["sheet"])
+            if sheet["range"] is None:
+                print("(所选范围内没有可显示内容)")
+                continue
+            print("范围: %s" % sheet["range"])
+            print(render_table(sheet["values"], sheet["row_start"], sheet["col_start"]))
+    return {"ok": True, "file": str(path), "sheets": sheets}
 
 
 def load_write_data(args):
@@ -423,19 +391,8 @@ def run_edit(args):
     elif args.command == "clear":
         operation_name = "clear"
         operation = lambda book: clear_range(
-            book, args.sheet, args.cell_range, args.with_style
+            book, args.sheet, args.cell_range, args.clear_style
         )
-    elif args.command == "cell":
-        if args.cell_command == "set":
-            if args.value is None and args.font is None and args.font_size is None:
-                raise TargetError("cell set 至少指定 --value、--font 或 --font-size")
-            operation_name = "cell.set"
-            operation = lambda book: set_cell(
-                book, args.sheet, args.cell, args.value, args.type, args.font, args.font_size
-            )
-        else:
-            operation_name = "cell.clear"
-            operation = lambda book: clear_cell(book, args.sheet, args.cell)
     elif args.command == "sheet":
         if args.sheet_command == "add":
             operation_name = "sheet.add"

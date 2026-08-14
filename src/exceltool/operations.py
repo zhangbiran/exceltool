@@ -125,7 +125,7 @@ def read_sheet(workbook, sheet_name, options):
             (
                 workbook.json_value(sheet.getCellByPosition(col, row))
                 if json_values
-                else workbook.display_value(sheet.getCellByPosition(col, row), options.get("value_mode", "display"))
+                else workbook.display_value(sheet.getCellByPosition(col, row))
             )
             for col in range(start_col, end_col)
         ])
@@ -179,52 +179,6 @@ def sheet_information(workbook, sheet_name=None):
             "last_col": column_name(cols),
         })
     return result
-
-
-def set_cell(workbook, sheet_name, address, value=None, value_type="string", font=None, font_size=None):
-    validate_font_size(font_size)
-    row, col = cell_ref(address)
-    sheet = workbook.sheet(sheet_name)
-    cell = sheet.getCellByPosition(col, row)
-    if value is not None:
-        if value_type == "string":
-            cell.String = value
-        elif value_type == "number":
-            try:
-                cell.Value = float(value)
-            except ValueError:
-                raise TargetError("number 类型需要有效数字: %s" % value)
-        elif value_type == "bool":
-            lowered = value.lower()
-            if lowered not in ("true", "false", "1", "0"):
-                raise TargetError("bool 类型只接受 true/false/1/0")
-            cell.Formula = "=TRUE()" if lowered in ("true", "1") else "=FALSE()"
-        elif value_type == "formula":
-            cell.Formula = value if value.startswith("=") else "=" + value
-        else:
-            raise TargetError("未知值类型: %s" % value_type)
-    apply_font(cell, font, font_size)
-    expected_formula = cell.Formula
-    expected_string = cell.String
-    def verify(reopened):
-        target = reopened.sheet(sheet_name).getCellByPosition(col, row)
-        if target.Formula != expected_formula or target.String != expected_string:
-            raise VerificationError("单元格写后验证失败: %s!%s" % (sheet_name, address))
-        if not verify_font(target, font, font_size):
-            raise VerificationError(
-                "单元格样式写后验证失败: %s!%s；%s"
-                % (sheet_name, address, font_verification_error(target, font, font_size))
-            )
-
-    changes = {"sheet": sheet_name, "cell": address, "value": expected_string}
-
-    def verified(reopened):
-        verify(reopened)
-        if font is not None:
-            target = reopened.sheet(sheet_name).getCellByPosition(col, row)
-            changes["actual_font"] = cell_style(target)["font"]
-
-    return changes, verified
 
 
 def apply_font(cell, font=None, font_size=None):
@@ -436,19 +390,6 @@ def clear_range(workbook, sheet_name, range_value, with_style=False):
                 raise VerificationError("范围清空未移除硬样式")
 
     return {"sheet": sheet_name, "range": range_value, "with_style": with_style}, verify
-
-
-def clear_cell(workbook, sheet_name, address):
-    row, col = cell_ref(address)
-    # VALUE | DATETIME | STRING | FORMULA; preserve formatting and annotations.
-    workbook.sheet(sheet_name).getCellByPosition(col, row).clearContents(23)
-
-    def verify(reopened):
-        cell = reopened.sheet(sheet_name).getCellByPosition(col, row)
-        if cell.String or cell.Formula:
-            raise VerificationError("单元格清空验证失败: %s!%s" % (sheet_name, address))
-
-    return {"sheet": sheet_name, "cell": address}, verify
 
 
 def sheet_add(workbook, name):

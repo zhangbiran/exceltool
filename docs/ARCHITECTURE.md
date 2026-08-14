@@ -13,7 +13,7 @@ LibreOffice 和 `python3-uno`。代价是存在外部进程依赖，保存时也
 
 - `cli.py`：命令、参数、JSON、退出码。
 - `engine.py`：启动隔离 LibreOffice、UNO 连接、工作簿读写与低层操作。
-- `operations.py`：查看、查找、单元格、sheet、行和列的用户语义。
+- `operations.py`：查看、查找、矩阵/范围、sheet、行和列的用户语义。
 - `fonts.py`：通过 fontconfig 精确检查请求字体与系统解析字体。
 - `editing.py`：临时副本、原子发布和写后验证。
 - `patching.py`：Patch v1 严格校验、顺序分派、失败定位和最终状态验证计划。
@@ -22,8 +22,9 @@ LibreOffice 和 `python3-uno`。代价是存在外部进程依赖，保存时也
 抽象公共接口。
 
 二维 JSON 是命令层的稳定数据边界：空值、数字、布尔、文本和公式由统一编解码
-规则转换，不暴露 UNO 的 `CellContentType`。裸 JSON 用于管道，带元数据 JSON
-用于审计和多目标查看。公式管道按文本保存，结构复制交由 UNO `copyRange`。
+规则转换，不暴露 UNO 的 `CellContentType`。裸 JSON 用于单 sheet 管道，带元数据
+JSON 用于审计和多 sheet 查看。每次调用只打开一个工作簿；公式管道按文本保存，
+结构复制交由 UNO `copyRange`。
 `view --tail N` 在每个 sheet 读取其有效区域后计算最后 N 行，因此多 sheet 查询
 不会错误复用第一个 sheet 的行边界；列范围仍按普通 `--cols` 解析。
 `sheet info` 复用同一有效区域计算，以只读方式返回一个或全部 sheet 的范围、行列数
@@ -31,6 +32,8 @@ LibreOffice 和 `python3-uno`。代价是存在外部进程依赖，保存时也
 样式元数据只附加到 json-full；文本单元格的字体字号通过整段 text cursor 写入，
 避免 LibreOffice 保存已有文本时丢失字符属性。验证按内容脚本选择相关字体槽，
 并保留三个字体脚本槽的实际值以展示回退。
+单格不建立独立编辑协议：`write` 的一格二维数组、`clear --range CELL` 和
+`style --range CELL` 分别复用矩阵写入与范围编辑路径。
 
 ## 写入流程
 
