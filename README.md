@@ -202,6 +202,22 @@ Complex；结果仍完整报告三槽，便于识别 LibreOffice 的回退。`--
 `sheet`、`cell`、`display`、`formula` 和 `match_in`。当实际匹配超过上限时
 `truncated` 为 `true`，调用者应缩小范围或明确调大上限。
 
+需要按格式查找错误码、ID 等结构化文本时使用 Python 标准正则：
+
+```bash
+./exceltool find --file book.xls --sheet 错误码 --cols C:C \
+  --text '^ERR_[0-9]{4}$' --regex --json
+```
+
+`--regex` 与普通 `find` 使用完全相同的 sheet 和范围规则，可以搜索全部 sheet，
+也可以配合 `--sheet`、`--rows`、`--cols`、`--range`、`--tail` 或 `--from/--n`
+缩小范围。`--case-sensitive` 同样适用于正则；未指定时正则不区分大小写。非法正则
+会在启动 LibreOffice 前返回退出码 3。Python 标准正则没有可靠的单次匹配超时，
+因此 AI 应根据工作簿大小自行选择合理范围，并使用简单模式，避免嵌套重复等可能
+产生灾难性回溯的写法。
+
+查找 JSON 顶层还包含 `regex` 和 `case_sensitive`，便于调用者确认实际匹配模式。
+
 ## 行列定位与结构操作
 
 行使用从 1 开始的数字，列可以使用 Excel 字母。常用定位参数如下：

@@ -16,6 +16,7 @@ from .operations import (
     col_delete,
     col_insert,
     find_cells,
+    prepare_find_query,
     row_copy,
     row_delete,
     row_insert,
@@ -212,6 +213,11 @@ def build_parser():
     add_window_selection(find)
     find.add_argument("--look-in", choices=("values", "formulas", "both"), default="both", help="查找显示值、公式或两者，默认 both")
     find.add_argument("--case-sensitive", action="store_true", help="区分大小写")
+    find.add_argument(
+        "--regex",
+        action="store_true",
+        help="将 --text 作为 Python 正则",
+    )
     find.add_argument("--limit", type=int, default=100, help="最大结果数，默认 100")
     add_json(find)
 
@@ -337,20 +343,23 @@ def run_font_check(args):
 
 
 def run_find(args):
-    path = validate_input(args.file)
     options = window_options(args)
+    prepared_query = prepare_find_query(args.text, args.case_sensitive, args.regex)
+    path = validate_input(args.file)
     with LibreOfficeSession() as session:
         workbook = session.load(path, read_only=True)
         try:
             matches, truncated = find_cells(
                 workbook, args.text, args.sheet, options, args.look_in,
-                args.case_sensitive, args.limit,
+                args.case_sensitive, args.limit, args.regex, prepared_query,
             )
         finally:
             workbook.close()
     result = {
         "file": str(path),
         "query": args.text,
+        "regex": args.regex,
+        "case_sensitive": args.case_sensitive,
         "matches": matches,
         "truncated": truncated,
     }

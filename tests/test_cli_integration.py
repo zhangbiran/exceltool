@@ -465,6 +465,40 @@ class CliIntegrationTests(unittest.TestCase):
                 self.assertEqual(len(limited_payload["matches"]), 1)
                 self.assertTrue(limited_payload["truncated"])
 
+                regex_values = self.run_cli(
+                    "find", "--file", str(source), "--sheet", "Data",
+                    "--cols", "B:B", "--text", "^a[a-z]+$", "--regex", "--json",
+                )
+                regex_payload = json.loads(regex_values.stdout)
+                self.assertEqual(
+                    [match["cell"] for match in regex_payload["matches"]],
+                    ["B2"],
+                )
+                self.assertTrue(regex_payload["regex"])
+                self.assertFalse(regex_payload["case_sensitive"])
+
+                regex_formulas = self.run_cli(
+                    "find", "--file", str(source), "--sheet", "Data",
+                    "--cols", "C", "--text", r"^=A[23]\*2$", "--regex",
+                    "--look-in", "formulas", "--case-sensitive", "--json",
+                )
+                regex_formula_payload = json.loads(regex_formulas.stdout)
+                self.assertEqual(
+                    [match["cell"] for match in regex_formula_payload["matches"]],
+                    ["C2", "C3"],
+                )
+                self.assertTrue(regex_formula_payload["case_sensitive"])
+
+                regex_unbounded = self.run_cli(
+                    "find", "--file", str(source), "--text", "^Alpha", "--regex",
+                    "--json",
+                )
+                self.assertEqual(
+                    [(match["sheet"], match["cell"])
+                     for match in json.loads(regex_unbounded.stdout)["matches"]],
+                    [("Data", "B2"), ("Extra", "A1")],
+                )
+
         source = self.directory / "find-invalid.xlsx"
         create_fixture(source)
         invalid = self.run_cli(
@@ -482,6 +516,13 @@ class CliIntegrationTests(unittest.TestCase):
             "--cols", "B", "--json", expected=3,
         )
         self.assertIn("不能与其他范围参数", ambiguous.stderr)
+        invalid_regex = self.run_cli(
+            "find", "--file", str(self.directory / "missing.xlsx"),
+            "--text", "(", "--sheet", "Data", "--cols", "B", "--regex",
+            "--json", expected=3,
+        )
+        self.assertIn("非法正则表达式", invalid_regex.stderr)
+        self.assertNotIn("文件不存在", invalid_regex.stderr)
 
     def test_unexpected_uno_error_has_stable_boundary(self):
         source = self.directory / "invalid-name.xlsx"

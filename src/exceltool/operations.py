@@ -1,4 +1,5 @@
 import math
+import re
 
 from .errors import TargetError, VerificationError
 from .ranges import cell_range, cell_ref, col_range, column_name, column_number, resolve_window, row_range
@@ -665,10 +666,19 @@ def col_autofit(workbook, sheet_name, cols, max_width_mm=60.0):
     return changes, verify
 
 
-def find_cells(workbook, text, sheet_name=None, options=None, look_in="both",
-               case_sensitive=False, limit=100):
+def prepare_find_query(text, case_sensitive=False, regex=False):
     if not text:
         raise TargetError("find --text 不能为空")
+    if not regex:
+        return text if case_sensitive else text.casefold()
+    try:
+        return re.compile(text, 0 if case_sensitive else re.IGNORECASE)
+    except re.error as exc:
+        raise TargetError("非法正则表达式: %s" % exc)
+
+
+def find_cells(workbook, text, sheet_name=None, options=None, look_in="both",
+               case_sensitive=False, limit=100, regex=False, prepared_query=None):
     if limit < 1:
         raise TargetError("find --limit 必须是正整数")
     names = workbook.sheet_names()
@@ -676,7 +686,9 @@ def find_cells(workbook, text, sheet_name=None, options=None, look_in="both",
         if sheet_name not in names:
             raise TargetError("未找到 sheet: %s" % sheet_name)
         names = [sheet_name]
-    needle = text if case_sensitive else text.casefold()
+    query = prepared_query
+    if query is None:
+        query = prepare_find_query(text, case_sensitive, regex)
     matches = []
     truncated = False
     options = options or {}
@@ -700,12 +712,12 @@ def find_cells(workbook, text, sheet_name=None, options=None, look_in="both",
                 formula = cell.Formula if cell.Type.value == "FORMULA" else None
                 matched = []
                 if look_in in ("values", "both"):
-                    haystack = display if case_sensitive else display.casefold()
-                    if needle in haystack:
+                    haystack = display if (case_sensitive or regex) else display.casefold()
+                    if (query.search(haystack) if regex else query in haystack):
                         matched.append("values")
                 if look_in in ("formulas", "both") and formula is not None:
-                    haystack = formula if case_sensitive else formula.casefold()
-                    if needle in haystack:
+                    haystack = formula if (case_sensitive or regex) else formula.casefold()
+                    if (query.search(haystack) if regex else query in haystack):
                         matched.append("formulas")
                 if not matched:
                     continue
