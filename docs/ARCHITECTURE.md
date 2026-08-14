@@ -24,6 +24,10 @@ LibreOffice 和 `python3-uno`。代价是存在外部进程依赖，保存时也
 二维 JSON 是命令层的稳定数据边界：空值、数字、布尔、文本和公式由统一编解码
 规则转换，不暴露 UNO 的 `CellContentType`。裸 JSON 用于管道，带元数据 JSON
 用于审计和多目标查看。公式管道按文本保存，结构复制交由 UNO `copyRange`。
+`view --tail N` 在每个 sheet 读取其有效区域后计算最后 N 行，因此多 sheet 查询
+不会错误复用第一个 sheet 的行边界；列范围仍按普通 `--cols` 解析。
+`sheet info` 复用同一有效区域计算，以只读方式返回一个或全部 sheet 的范围、行列数
+和最后行列，不保存工作簿。只有格式的尾部单元格可能被 LibreOffice 计入有效区域。
 样式元数据只附加到 json-full；文本单元格的字体字号通过整段 text cursor 写入，
 避免 LibreOffice 保存已有文本时丢失字符属性。验证按内容脚本选择相关字体槽，
 并保留三个字体脚本槽的实际值以展示回退。
@@ -45,8 +49,9 @@ LibreOffice 保存时可能规范化的内部直接样式表示。行操作和 s
 允许 0.1 mm 的格式量化误差。整个 patch 仍只调用一次 `save` 和一次只读重开。
 
 列宽自适应通过 UNO `OptimalWidth` 计算后立即施加毫米上限，只在显式
-`col autofit` 或 `col.autofit` patch 操作中发生。`find` 只读遍历选定 sheet 的
-有效区域或显式范围，不修改、保存或发布工作簿。
+`col autofit` 或 `col.autofit` patch 操作中发生。`find` 和 `view` 通过同一
+`resolve_window` 路径解析行、列、矩形、末尾及正方区域；`find` 只读遍历选定
+sheet 的解析结果，不修改、保存或发布工作簿。
 
 列宽 JSON 同时保留操作时的 `width_mm` 和重开后的 `actual_width_mm`。Patch 的
 验证计划会跟踪后续列插入、删除和复制造成的坐标移动，通过 `final_column` 报告

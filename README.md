@@ -81,6 +81,16 @@ make check-skill-docs \
 ./exceltool view --file book.xls --sheet Sheet1 --rows 1:3 --cols A:F
 ```
 
+查看有效区域最后 20 行，可继续限制列：
+
+```bash
+./exceltool view --file book.xls --sheet Sheet1 --tail 20 --cols A:F
+```
+
+`--tail` 按每个 sheet 各自的有效区域计算，数量必须是正整数；当有效行数不足 N
+时返回全部有效行。它可以与 `--cols` 组合，但不能与 `--rows`、`--range` 或
+`--from/--n` 同时使用。
+
 矩形范围与正方区域：
 
 ```bash
@@ -146,6 +156,8 @@ Complex；结果仍完整报告三槽，便于识别 LibreOffice 的回退。`--
 ```bash
 ./exceltool sheet list --file book.xls
 ./exceltool sheet list --file book.xls --json
+./exceltool sheet info --file book.xls
+./exceltool sheet info --file book.xls --sheet Sheet1 --json
 
 ./exceltool sheet add --file book.xls --name 新表
 ./exceltool sheet delete --file book.xls --sheet 旧表
@@ -153,7 +165,10 @@ Complex；结果仍完整报告三槽，便于识别 LibreOffice 的回退。`--
 ./exceltool sheet copy --file book.xls --sheet 模板 --name 新表
 ```
 
-`sheet list --json` stdout 直接输出 sheet 名称数组。
+`sheet list --json` stdout 直接输出 sheet 名称数组。`sheet info` 返回 sheet 的有效范围、
+有效行列数和最后行列；省略 `--sheet` 时返回全部 sheet。JSON 字段为 `used_range`、
+`used_rows`、`used_cols`、`last_row` 和 `last_col`。这里的“有效”采用 LibreOffice 的
+有效区域定义，因此只有格式的尾部空行或空列也可能计入。
 
 ## 查找
 
@@ -171,6 +186,22 @@ Complex；结果仍完整报告三槽，便于识别 LibreOffice 的回退。`--
   --case-sensitive --limit 200 --json
 ```
 
+`find` 与 `view` 共用范围参数：`--rows`、`--cols`、`--range`、`--tail` 和
+`--from/--n`。例如只在 F 列的有效行中查找：
+
+```bash
+./exceltool find --file book.xls --sheet 任务 --text "苹果" --cols F --json
+```
+
+也可以同时限制行列，或查找有效区域最后 20 行：
+
+```bash
+./exceltool find --file book.xls --sheet 任务 --text "苹果" \
+  --rows 10:100 --cols F:H --json
+./exceltool find --file book.xls --sheet 任务 --text "苹果" \
+  --tail 20 --cols A:F --json
+```
+
 `--look-in` 可取 `values`、`formulas` 或 `both`，默认 `both`；`--limit` 默认
 100。JSON 结果包含 `file`、`query`、`matches` 和 `truncated`，每条匹配包含
 `sheet`、`cell`、`display`、`formula` 和 `match_in`。当实际匹配超过上限时
@@ -182,6 +213,7 @@ Complex；结果仍完整报告三槽，便于识别 LibreOffice 的回退。`--
 
 ```text
 --rows 1:3       第 1～3 行
+--tail 20        有效区域最后 20 行
 --cols A:F       A～F 列
 --range B2:F10   矩形范围
 --begin AA3      AA 列第 3 行

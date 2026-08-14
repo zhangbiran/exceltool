@@ -110,6 +110,19 @@ class CliIntegrationTests(unittest.TestCase):
                     "view", "--file", str(path), "--sheet", "Data", "--range", "C2:C2", "--json"
                 )
                 self.assertTrue(json.loads(formula.stdout)[0][0].startswith("="))
+                tail = self.run_cli(
+                    "view", "--file", str(path), "--sheet", "Data", "--tail", "2",
+                    "--cols", "A:C", "--json-full",
+                )
+                tail_payload = json.loads(tail.stdout)
+                self.assertEqual(tail_payload["range"], "A3:C4")
+                self.assertEqual(tail_payload["values"][0][:2], [2, "Beta"])
+                self.assertEqual(tail_payload["values"][1][:2], [3, "Sentinel"])
+                oversized_tail = self.run_cli(
+                    "view", "--file", str(path), "--sheet", "Data", "--tail", "10",
+                    "--cols", "A:C", "--json-full",
+                )
+                self.assertEqual(json.loads(oversized_tail.stdout)["range"], "A1:C4")
 
         nested = self.directory / "nested"
         nested.mkdir()
@@ -123,6 +136,16 @@ class CliIntegrationTests(unittest.TestCase):
         )
         self.assertFalse(json.loads(missing.stderr)["ok"])
         self.assertNotIn("Traceback", missing.stderr)
+        conflict = self.run_cli(
+            "view", "--file", str(xlsx), "--sheet", "Data", "--tail", "2",
+            "--rows", "1:2", "--json-full", expected=3,
+        )
+        self.assertIn("不能与", conflict.stderr)
+        invalid_tail = self.run_cli(
+            "view", "--file", str(xlsx), "--sheet", "Data", "--tail", "0",
+            "--json-full", expected=3,
+        )
+        self.assertIn("正整数", invalid_tail.stderr)
 
     def test_cell_edit_style_clear_and_default_original_for_both_formats(self):
         for extension in (".xlsx", ".xls"):
@@ -176,6 +199,46 @@ class CliIntegrationTests(unittest.TestCase):
                     "--type", "number", "--out", str(output), "--json", expected=3,
                 )
                 self.assertNotIn("Traceback", exists.stderr)
+
+    def test_sheet_info_for_both_formats(self):
+        sources = []
+        for extension in (".xlsx", ".xls"):
+            with self.subTest(extension=extension):
+                source = self.directory / ("sheet-info" + extension)
+                sources.append(source)
+                create_fixture(source, extra_sheet=True)
+                result = self.run_cli(
+                    "sheet", "info", "--file", str(source), "--json"
+                )
+                payload = json.loads(result.stdout)
+                self.assertEqual(
+                    [item["sheet"] for item in payload["sheets"]],
+                    ["Data", "Extra"],
+                )
+                data = payload["sheets"][0]
+                self.assertEqual(data["used_range"], "A1:F4")
+                self.assertEqual(data["used_rows"], 4)
+                self.assertEqual(data["used_cols"], 6)
+                self.assertEqual(data["last_row"], 4)
+                self.assertEqual(data["last_col"], "F")
+                selected = self.run_cli(
+                    "sheet", "info", "--file", str(source), "--sheet", "Extra",
+                    "--json",
+                )
+                self.assertEqual(json.loads(selected.stdout)["sheets"], [{
+                    "sheet": "Extra",
+                    "used_range": "A1:A1",
+                    "used_rows": 1,
+                    "used_cols": 1,
+                    "last_row": 1,
+                    "last_col": "A",
+                }])
+
+        missing = self.run_cli(
+            "sheet", "info", "--file", str(sources[0]), "--sheet", "Missing",
+            "--json", expected=3,
+        )
+        self.assertIn("未找到 sheet", missing.stderr)
 
     def test_sheet_and_row_operations_for_both_formats(self):
         for extension in (".xlsx", ".xls"):
@@ -321,6 +384,39 @@ class CliIntegrationTests(unittest.TestCase):
                 self.assertEqual(formula_match["formula"], "=A2*2")
                 self.assertEqual(formula_match["match_in"], ["formulas"])
 
+                column_only = self.run_cli(
+                    "find", "--file", str(source), "--text", "a", "--sheet", "Data",
+                    "--cols", "B", "--json",
+                )
+                self.assertEqual(
+                    [match["cell"] for match in json.loads(column_only.stdout)["matches"]],
+                    ["B1", "B2", "B3"],
+                )
+                row_and_column = self.run_cli(
+                    "find", "--file", str(source), "--text", "sentinel",
+                    "--sheet", "Data", "--rows", "4", "--cols", "B", "--json",
+                )
+                self.assertEqual(
+                    [match["cell"] for match in json.loads(row_and_column.stdout)["matches"]],
+                    ["B4"],
+                )
+                tail = self.run_cli(
+                    "find", "--file", str(source), "--text", "keep", "--sheet", "Data",
+                    "--tail", "1", "--cols", "F", "--json",
+                )
+                self.assertEqual(
+                    [match["cell"] for match in json.loads(tail.stdout)["matches"]],
+                    ["F4"],
+                )
+                square = self.run_cli(
+                    "find", "--file", str(source), "--text", "alpha", "--sheet", "Data",
+                    "--from", "B2", "--n", "1", "--json",
+                )
+                self.assertEqual(
+                    [match["cell"] for match in json.loads(square.stdout)["matches"]],
+                    ["B2"],
+                )
+
                 sensitive = self.run_cli(
                     "find", "--file", str(source), "--text", "alpha",
                     "--case-sensitive", "--json",
@@ -341,6 +437,16 @@ class CliIntegrationTests(unittest.TestCase):
             "--json", expected=3,
         )
         self.assertIn("正整数", invalid.stderr)
+        conflict = self.run_cli(
+            "find", "--file", str(source), "--text", "Alpha", "--tail", "1",
+            "--rows", "1", "--json", expected=3,
+        )
+        self.assertIn("不能与", conflict.stderr)
+        ambiguous = self.run_cli(
+            "find", "--file", str(source), "--text", "Alpha", "--range", "B2",
+            "--cols", "B", "--json", expected=3,
+        )
+        self.assertIn("不能与其他范围参数", ambiguous.stderr)
 
     def test_unexpected_uno_error_has_stable_boundary(self):
         source = self.directory / "invalid-name.xlsx"

@@ -68,8 +68,10 @@ def col_range(value):
 
 def cell_range(value):
     parts = value.strip().split(":")
+    if len(parts) == 1:
+        parts.append(parts[0])
     if len(parts) != 2:
-        raise TargetError("范围格式应为 A1:D20")
+        raise TargetError("范围格式应为 A1:D20 或单个单元格")
     start_row, start_col = cell_ref(parts[0])
     end_row, end_col = cell_ref(parts[1])
     if end_row < start_row or end_col < start_col:
@@ -77,8 +79,15 @@ def cell_range(value):
     return start_row, end_row + 1, start_col, end_col + 1
 
 
-def resolve_window(rows, cols, range_value, from_value, size, max_rows, max_cols):
-    if from_value is not None or size is not None:
+def resolve_window(rows, cols, range_value, from_value, size, tail, max_rows, max_cols):
+    if tail is not None:
+        if isinstance(tail, bool) or not isinstance(tail, int) or tail < 1:
+            raise TargetError("--tail 必须是正整数")
+        if rows or range_value or from_value or size is not None:
+            raise TargetError("--tail 不能与 --rows、--range 或 --from/--n 同时使用")
+        col_start, col_end = col_range(cols) if cols else (0, max_cols)
+        window = max(0, max_rows - tail), max_rows, col_start, col_end
+    elif from_value is not None or size is not None:
         if not from_value or size is None or size < 1:
             raise TargetError("--from 必须和正整数 --n 一起使用")
         row, col = cell_ref(from_value)

@@ -23,6 +23,7 @@ from .operations import (
     sheet_add,
     sheet_copy,
     sheet_delete,
+    sheet_information,
     sheet_rename,
     style_range,
     view_workbook,
@@ -58,6 +59,37 @@ def add_file_sheet(parser, sheet_required=True):
     parser.add_argument("--sheet", required=sheet_required, help="sheet 名")
 
 
+def add_window_selection(parser):
+    parser.add_argument("--rows", help="行范围，如 1:20")
+    parser.add_argument("--tail", type=int, help="有效区域最后 N 行")
+    parser.add_argument("--cols", help="列范围，如 A:F 或 1:6")
+    parser.add_argument("--range", dest="cell_range", help="单元格范围，如 A1:F20")
+    parser.add_argument("--from", dest="from_cell", help="正方区域起点")
+    parser.add_argument("--n", type=int, help="正方区域大小")
+
+
+def window_options(args):
+    if args.cell_range and (
+        args.rows or args.cols or args.from_cell or args.n is not None or args.tail is not None
+    ):
+        raise TargetError("--range 不能与其他范围参数同时使用")
+    if (args.from_cell or args.n is not None) and (args.rows or args.cols):
+        raise TargetError("--from/--n 不能与 --rows/--cols 同时使用")
+    if args.tail is not None:
+        if args.tail < 1:
+            raise TargetError("--tail 必须是正整数")
+        if args.rows or args.cell_range or args.from_cell or args.n is not None:
+            raise TargetError("--tail 不能与 --rows、--range 或 --from/--n 同时使用")
+    return {
+        "rows": args.rows,
+        "tail": args.tail,
+        "cols": args.cols,
+        "range": args.cell_range,
+        "from": args.from_cell,
+        "n": args.n,
+    }
+
+
 def build_parser():
     parser = ExcelToolArgumentParser(prog="exceltool", description="查看和局部编辑 .xls/.xlsx")
     parser.add_argument("--version", action="version", version="exceltool 0.1.0")
@@ -68,11 +100,7 @@ def build_parser():
     view.add_argument("--dir", help="扫描目录中的 .xls/.xlsx")
     view.add_argument("-r", "--recursive", action="store_true", help="递归扫描目录")
     view.add_argument("--sheet", help="sheet 名；省略则查看全部")
-    view.add_argument("--rows", help="行范围，如 1:20")
-    view.add_argument("--cols", help="列范围，如 A:F 或 1:6")
-    view.add_argument("--range", dest="cell_range", help="单元格范围，如 A1:F20")
-    view.add_argument("--from", dest="from_cell", help="正方区域起点")
-    view.add_argument("--n", type=int, help="正方区域大小")
+    add_window_selection(view)
     view.add_argument("--value-mode", choices=("display", "raw", "formula"), default="display")
     view.add_argument("--include-style", action="store_true", help="在 --json-full 中包含字体和字号")
     view_json = view.add_mutually_exclusive_group()
@@ -127,6 +155,9 @@ def build_parser():
     sheet_list_parser = sheet_commands.add_parser("list", help="列出 sheet")
     sheet_list_parser.add_argument("--file", required=True)
     add_json(sheet_list_parser)
+    sheet_info_parser = sheet_commands.add_parser("info", help="查看 sheet 有效范围和行列数")
+    add_file_sheet(sheet_info_parser, sheet_required=False)
+    add_json(sheet_info_parser)
     sheet_add_parser = sheet_commands.add_parser("add", help="新增 sheet")
     add_file_sheet(sheet_add_parser, sheet_required=False)
     sheet_add_parser.add_argument("--name", required=True)
@@ -186,7 +217,7 @@ def build_parser():
     find.add_argument("--file", required=True)
     find.add_argument("--text", required=True)
     find.add_argument("--sheet")
-    find.add_argument("--range", dest="cell_range")
+    add_window_selection(find)
     find.add_argument("--look-in", choices=("values", "formulas", "both"), default="both")
     find.add_argument("--case-sensitive", action="store_true")
     find.add_argument("--limit", type=int, default=100)
@@ -222,20 +253,14 @@ def view_paths(args):
 
 
 def run_view(args):
-    if args.cell_range and (args.from_cell or args.n):
-        raise TargetError("--range 不能与 --from/--n 同时使用")
     if args.include_style and not args.json_full:
         raise TargetError("--include-style 必须与 --json-full 一起使用")
-    options = {
-        "rows": args.rows,
-        "cols": args.cols,
-        "range": args.cell_range,
-        "from": args.from_cell,
-        "n": args.n,
+    options = window_options(args)
+    options.update({
         "value_mode": args.value_mode,
         "json_values": args.json or args.json_full,
         "include_style": args.include_style,
-    }
+    })
     paths = view_paths(args)
     if args.json and (len(args.file) != 1 or args.dir or len(paths) != 1 or not args.sheet):
         raise TargetError("view --json 必须明确指定一个 --file 和一个 --sheet；多目标请使用 --json-full")
@@ -312,6 +337,26 @@ def run_sheet_list(args):
     return {"ok": True, "file": str(path), "sheets": names}
 
 
+def run_sheet_info(args):
+    path = validate_input(args.file)
+    with LibreOfficeSession() as session:
+        workbook = session.load(path, read_only=True)
+        try:
+            sheets = sheet_information(workbook, args.sheet)
+        finally:
+            workbook.close()
+    result = {"file": str(path), "sheets": sheets}
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        for info in sheets:
+            print("Sheet: %s" % info["sheet"])
+            print("有效范围: %s" % info["used_range"])
+            print("有效行数: %d" % info["used_rows"])
+            print("有效列数: %d" % info["used_cols"])
+    return result
+
+
 def run_font_check(args):
     result = inspect_font(args.name)
     if args.json:
@@ -325,11 +370,12 @@ def run_font_check(args):
 
 def run_find(args):
     path = validate_input(args.file)
+    options = window_options(args)
     with LibreOfficeSession() as session:
         workbook = session.load(path, read_only=True)
         try:
             matches, truncated = find_cells(
-                workbook, args.text, args.sheet, args.cell_range, args.look_in,
+                workbook, args.text, args.sheet, options, args.look_in,
                 args.case_sensitive, args.limit,
             )
         finally:
@@ -477,6 +523,8 @@ def main(argv=None):
             run_patch(args)
         elif args.command == "sheet" and args.sheet_command == "list":
             run_sheet_list(args)
+        elif args.command == "sheet" and args.sheet_command == "info":
+            run_sheet_info(args)
         elif args.command == "font" and args.font_command == "check":
             run_font_check(args)
         elif args.command == "find":

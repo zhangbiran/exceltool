@@ -23,6 +23,7 @@ class RangeTests(unittest.TestCase):
         self.assertEqual(row_range("2:5"), (1, 5))
         self.assertEqual(col_range("B:D"), (1, 4))
         self.assertEqual(cell_range("B2:D5"), (1, 5, 1, 4))
+        self.assertEqual(cell_range("B2"), (1, 2, 1, 2))
 
     def test_reverse_range_fails(self):
         with self.assertRaises(TargetError):
@@ -30,7 +31,21 @@ class RangeTests(unittest.TestCase):
 
     def test_zero_square_size_fails(self):
         with self.assertRaises(TargetError):
-            resolve_window(None, None, None, "A1", 0, 5, 5)
+            resolve_window(None, None, None, "A1", 0, None, 5, 5)
+
+    def test_tail_uses_last_rows_and_allows_columns(self):
+        self.assertEqual(
+            resolve_window(None, "B:D", None, None, None, 2, 5, 6),
+            (3, 5, 1, 4),
+        )
+        self.assertEqual(
+            resolve_window(None, None, None, None, None, 10, 5, 6),
+            (0, 5, 0, 6),
+        )
+
+    def test_tail_rejects_conflicting_rows(self):
+        with self.assertRaises(TargetError):
+            resolve_window("1:2", None, None, None, None, 2, 5, 5)
 
 
 if __name__ == "__main__":

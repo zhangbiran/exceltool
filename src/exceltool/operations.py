@@ -113,6 +113,7 @@ def read_sheet(workbook, sheet_name, options):
         options.get("range"),
         options.get("from"),
         options.get("n"),
+        options.get("tail"),
         max_rows,
         max_cols,
     )
@@ -158,6 +159,26 @@ def view_workbook(workbook, sheet_name, options):
             raise TargetError("未找到 sheet: %s" % sheet_name)
         names = [sheet_name]
     return [read_sheet(workbook, name, options) for name in names]
+
+
+def sheet_information(workbook, sheet_name=None):
+    names = workbook.sheet_names()
+    if sheet_name:
+        if sheet_name not in names:
+            raise TargetError("未找到 sheet: %s" % sheet_name)
+        names = [sheet_name]
+    result = []
+    for name in names:
+        rows, cols = workbook.used_size(workbook.sheet(name))
+        result.append({
+            "sheet": name,
+            "used_range": "A1:%s%d" % (column_name(cols), rows),
+            "used_rows": rows,
+            "used_cols": cols,
+            "last_row": rows,
+            "last_col": column_name(cols),
+        })
+    return result
 
 
 def set_cell(workbook, sheet_name, address, value=None, value_type="string", font=None, font_size=None):
@@ -703,7 +724,7 @@ def col_autofit(workbook, sheet_name, cols, max_width_mm=60.0):
     return changes, verify
 
 
-def find_cells(workbook, text, sheet_name=None, range_value=None, look_in="both",
+def find_cells(workbook, text, sheet_name=None, options=None, look_in="both",
                case_sensitive=False, limit=100):
     if not text:
         raise TargetError("find --text 不能为空")
@@ -717,17 +738,20 @@ def find_cells(workbook, text, sheet_name=None, range_value=None, look_in="both"
     needle = text if case_sensitive else text.casefold()
     matches = []
     truncated = False
+    options = options or {}
     for name in names:
         sheet = workbook.sheet(name)
         max_rows, max_cols = workbook.used_size(sheet)
-        if range_value:
-            start_row, end_row, start_col, end_col = cell_range(
-                range_value if ":" in range_value else "%s:%s" % (range_value, range_value)
-            )
-            end_row = min(end_row, max_rows)
-            end_col = min(end_col, max_cols)
-        else:
-            start_row, end_row, start_col, end_col = 0, max_rows, 0, max_cols
+        start_row, end_row, start_col, end_col = resolve_window(
+            options.get("rows"),
+            options.get("cols"),
+            options.get("range"),
+            options.get("from"),
+            options.get("n"),
+            options.get("tail"),
+            max_rows,
+            max_cols,
+        )
         for row in range(start_row, end_row):
             for col in range(start_col, end_col):
                 cell = sheet.getCellByPosition(col, row)
