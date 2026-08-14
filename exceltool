@@ -1,0 +1,15 @@
+#!/usr/bin/python3
+import sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parent
+source_package = root / "src"
+installed_package = root.parent / "lib" / "exceltool"
+sys.path.insert(0, str(source_package if source_package.is_dir() else installed_package.parent))
+sys.dont_write_bytecode = True
+
+from exceltool.cli import main  # noqa: E402
+
+
+if __name__ == "__main__":
+    sys.exit(main())

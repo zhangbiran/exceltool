@@ -1,0 +1,429 @@
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from .editing import edit_file, validate_input
+from .engine import LibreOfficeSession
+from .errors import ExcelToolError, TargetError
+from .fonts import inspect_font
+from .patching import load_patch, operation_error, patch_operation
+from .operations import (
+    clear_range,
+    clear_cell,
+    row_copy,
+    row_delete,
+    row_insert,
+    set_cell,
+    sheet_add,
+    sheet_copy,
+    sheet_delete,
+    sheet_rename,
+    style_range,
+    view_workbook,
+    write_matrix,
+)
+from .output import render_table
+from .ranges import column_name
+
+
+class ExcelToolArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        if "--json" in sys.argv[1:] or "--json-full" in sys.argv[1:]:
+            print(
+                json.dumps({"ok": False, "error": "参数错误: %s" % message, "code": 2}, ensure_ascii=False),
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        super().error(message)
+
+
+def add_json(parser):
+    parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+
+
+def add_edit_output(parser):
+    parser.add_argument("--out", help="另存为新文件；省略时修改输入文件")
+    parser.add_argument("--overwrite", action="store_true", help="允许覆盖已存在的 --out")
+    add_json(parser)
+
+
+def add_file_sheet(parser, sheet_required=True):
+    parser.add_argument("--file", required=True, help="输入 .xls/.xlsx 文件")
+    parser.add_argument("--sheet", required=sheet_required, help="sheet 名")
+
+
+def build_parser():
+    parser = ExcelToolArgumentParser(prog="exceltool", description="查看和局部编辑 .xls/.xlsx")
+    parser.add_argument("--version", action="version", version="exceltool 0.1.0")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    view = commands.add_parser("view", help="查看工作簿局部区域")
+    view.add_argument("--file", action="append", default=[], help="文件路径，可重复")
+    view.add_argument("--dir", help="扫描目录中的 .xls/.xlsx")
+    view.add_argument("-r", "--recursive", action="store_true", help="递归扫描目录")
+    view.add_argument("--sheet", help="sheet 名；省略则查看全部")
+    view.add_argument("--rows", help="行范围，如 1:20")
+    view.add_argument("--cols", help="列范围，如 A:F 或 1:6")
+    view.add_argument("--range", dest="cell_range", help="单元格范围，如 A1:F20")
+    view.add_argument("--from", dest="from_cell", help="正方区域起点")
+    view.add_argument("--n", type=int, help="正方区域大小")
+    view.add_argument("--value-mode", choices=("display", "raw", "formula"), default="display")
+    view.add_argument("--include-style", action="store_true", help="在 --json-full 中包含字体和字号")
+    view_json = view.add_mutually_exclusive_group()
+    view_json.add_argument("--json", action="store_true", help="输出可回写的纯二维 JSON 数组")
+    view_json.add_argument("--json-full", action="store_true", help="输出带文件、sheet 和范围元数据的 JSON")
+
+    write = commands.add_parser("write", help="从起始单元格批量写入二维 JSON")
+    add_file_sheet(write)
+    write.add_argument("--begin", required=True, help="起始单元格，如 F3 或 AA3")
+    write.add_argument("data", nargs="?", help="二维 JSON 数组")
+    write.add_argument("--stdin", action="store_true", help="从标准输入读取二维 JSON")
+    write.add_argument("--values-file", help="从 UTF-8 JSON 文件读取二维数组")
+    write.add_argument("--font")
+    write.add_argument("--font-size", type=float)
+    add_edit_output(write)
+
+    patch = commands.add_parser("patch", help="顺序执行一个工作簿的 JSON 操作批次")
+    patch.add_argument("--file", required=True, help="输入 .xls/.xlsx 文件")
+    patch.add_argument("--patch", required=True, help="UTF-8 patch JSON 文件")
+    add_edit_output(patch)
+
+    style = commands.add_parser("style", help="设置范围字体和字号")
+    add_file_sheet(style)
+    style.add_argument("--range", required=True, dest="cell_range")
+    style.add_argument("--font")
+    style.add_argument("--font-size", type=float)
+    add_edit_output(style)
+
+    clear = commands.add_parser("clear", help="清空范围内容")
+    add_file_sheet(clear)
+    clear.add_argument("--range", required=True, dest="cell_range")
+    clear.add_argument("--with-style", action="store_true", help="同时清除硬样式")
+    add_edit_output(clear)
+
+    cell = commands.add_parser("cell", help="单元格编辑")
+    cell_commands = cell.add_subparsers(dest="cell_command", required=True)
+    cell_set = cell_commands.add_parser("set", help="设置单元格值或字体")
+    add_file_sheet(cell_set)
+    cell_set.add_argument("--cell", required=True)
+    cell_set.add_argument("--value")
+    cell_set.add_argument("--type", choices=("string", "number", "bool", "formula"), default="string")
+    cell_set.add_argument("--font")
+    cell_set.add_argument("--font-size", type=float)
+    add_edit_output(cell_set)
+    cell_clear = cell_commands.add_parser("clear", help="清空单元格内容并保留样式")
+    add_file_sheet(cell_clear)
+    cell_clear.add_argument("--cell", required=True)
+    add_edit_output(cell_clear)
+
+    sheet = commands.add_parser("sheet", help="sheet 编辑")
+    sheet_commands = sheet.add_subparsers(dest="sheet_command", required=True)
+    sheet_list_parser = sheet_commands.add_parser("list", help="列出 sheet")
+    sheet_list_parser.add_argument("--file", required=True)
+    add_json(sheet_list_parser)
+    sheet_add_parser = sheet_commands.add_parser("add", help="新增 sheet")
+    add_file_sheet(sheet_add_parser, sheet_required=False)
+    sheet_add_parser.add_argument("--name", required=True)
+    add_edit_output(sheet_add_parser)
+    sheet_delete_parser = sheet_commands.add_parser("delete", help="删除 sheet")
+    add_file_sheet(sheet_delete_parser)
+    add_edit_output(sheet_delete_parser)
+    sheet_rename_parser = sheet_commands.add_parser("rename", help="重命名 sheet")
+    add_file_sheet(sheet_rename_parser)
+    sheet_rename_parser.add_argument("--name", required=True)
+    add_edit_output(sheet_rename_parser)
+    sheet_copy_parser = sheet_commands.add_parser("copy", help="复制 sheet")
+    add_file_sheet(sheet_copy_parser)
+    sheet_copy_parser.add_argument("--name", required=True)
+    add_edit_output(sheet_copy_parser)
+
+    row = commands.add_parser("row", help="行结构编辑")
+    row_commands = row.add_subparsers(dest="row_command", required=True)
+    row_insert_parser = row_commands.add_parser("insert", help="在指定行前插入空行")
+    add_file_sheet(row_insert_parser)
+    row_insert_parser.add_argument("--before", type=int, required=True)
+    row_insert_parser.add_argument("--count", type=int, default=1)
+    add_edit_output(row_insert_parser)
+    row_delete_parser = row_commands.add_parser("delete", help="删除行范围")
+    add_file_sheet(row_delete_parser)
+    row_delete_parser.add_argument("--rows", required=True)
+    add_edit_output(row_delete_parser)
+    row_copy_parser = row_commands.add_parser("copy", help="复制行并在目标行前插入")
+    add_file_sheet(row_copy_parser)
+    row_copy_parser.add_argument("--rows", required=True)
+    row_copy_parser.add_argument("--insert-before", type=int, required=True)
+    add_edit_output(row_copy_parser)
+
+    font = commands.add_parser("font", help="字体环境检查")
+    font_commands = font.add_subparsers(dest="font_command", required=True)
+    font_check = font_commands.add_parser("check", help="检查字体能否精确匹配")
+    font_check.add_argument("--name", required=True, help="字体名称")
+    add_json(font_check)
+
+    return parser
+
+
+def view_paths(args):
+    paths = [Path(item) for item in args.file]
+    if args.dir:
+        directory = Path(args.dir)
+        if not directory.is_dir():
+            raise TargetError("目录不存在: %s" % directory)
+        iterator = directory.rglob("*") if args.recursive else directory.iterdir()
+        paths.extend(path for path in iterator if path.is_file() and path.suffix.lower() in (".xls", ".xlsx"))
+    unique = []
+    seen = set()
+    for path in paths:
+        resolved = validate_input(path)
+        if resolved not in seen:
+            unique.append(resolved)
+            seen.add(resolved)
+    if not unique:
+        raise TargetError("至少指定一个 --file 或 --dir")
+    return sorted(unique, key=lambda path: str(path))
+
+
+def run_view(args):
+    if args.cell_range and (args.from_cell or args.n):
+        raise TargetError("--range 不能与 --from/--n 同时使用")
+    if args.include_style and not args.json_full:
+        raise TargetError("--include-style 必须与 --json-full 一起使用")
+    options = {
+        "rows": args.rows,
+        "cols": args.cols,
+        "range": args.cell_range,
+        "from": args.from_cell,
+        "n": args.n,
+        "value_mode": args.value_mode,
+        "json_values": args.json or args.json_full,
+        "include_style": args.include_style,
+    }
+    paths = view_paths(args)
+    if args.json and (len(args.file) != 1 or args.dir or len(paths) != 1 or not args.sheet):
+        raise TargetError("view --json 必须明确指定一个 --file 和一个 --sheet；多目标请使用 --json-full")
+    results = []
+    with LibreOfficeSession() as session:
+        for path in paths:
+            workbook = session.load(path, read_only=True)
+            try:
+                results.append({"file": str(path), "sheets": view_workbook(workbook, args.sheet, options)})
+            finally:
+                workbook.close()
+    if args.json:
+        print(json.dumps(results[0]["sheets"][0]["values"], ensure_ascii=False, indent=2))
+    elif args.json_full:
+        if len(results) == 1 and len(results[0]["sheets"]) == 1:
+            sheet = results[0]["sheets"][0]
+            payload = {
+                "file": results[0]["file"],
+                "sheet": sheet["sheet"],
+                "range": sheet["range"],
+                "begin": (
+                    "%s%d" % (column_name(sheet["col_start"] + 1), sheet["row_start"] + 1)
+                    if sheet["range"] else None
+                ),
+                "values": sheet["values"],
+            }
+            if "styles" in sheet:
+                payload["styles"] = sheet["styles"]
+        else:
+            payload = {"workbooks": results}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        for result in results:
+            print("\n========== %s ==========" % result["file"])
+            for sheet in result["sheets"]:
+                print("\n--- Sheet: %s ---" % sheet["sheet"])
+                if sheet["range"] is None:
+                    print("(所选范围内没有可显示内容)")
+                    continue
+                print("范围: %s" % sheet["range"])
+                print(render_table(sheet["values"], sheet["row_start"], sheet["col_start"]))
+    return {"ok": True, "workbooks": results}
+
+
+def load_write_data(args):
+    sources = int(args.data is not None) + int(args.stdin) + int(args.values_file is not None)
+    if sources != 1:
+        raise TargetError("write 必须且只能从位置 JSON、--stdin 或 --values-file 读取数据")
+    try:
+        if args.stdin:
+            raw = sys.stdin.read()
+        elif args.values_file:
+            raw = Path(args.values_file).read_text(encoding="utf-8")
+        else:
+            raw = args.data
+        return json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TargetError("无法读取二维 JSON: %s" % exc)
+
+
+def run_sheet_list(args):
+    path = validate_input(args.file)
+    with LibreOfficeSession() as session:
+        workbook = session.load(path, read_only=True)
+        try:
+            names = workbook.sheet_names()
+        finally:
+            workbook.close()
+    if args.json:
+        print(json.dumps(names, ensure_ascii=False, indent=2))
+    else:
+        for name in names:
+            print(name)
+    return {"ok": True, "file": str(path), "sheets": names}
+
+
+def run_font_check(args):
+    result = inspect_font(args.name)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print("请求字体: %s" % result["requested"])
+        print("解析字体: %s" % (result["resolved"] or "未找到"))
+        print("精确可用: %s" % ("是" if result["exact"] else "否"))
+    return result
+
+
+def run_edit(args):
+    font_check = None
+    requested_font = getattr(args, "font", None)
+    if requested_font is not None:
+        font_check = inspect_font(requested_font)
+        if not font_check["exact"]:
+            raise TargetError(
+                "字体不可精确使用: 请求=%s，系统解析=%s"
+                % (requested_font, font_check["resolved"] or "未找到")
+            )
+    if args.command == "write":
+        operation_name = "write"
+        matrix = load_write_data(args)
+        operation = lambda book: write_matrix(
+            book, args.sheet, args.begin, matrix, args.font, args.font_size
+        )
+    elif args.command == "style":
+        operation_name = "style"
+        operation = lambda book: style_range(
+            book, args.sheet, args.cell_range, args.font, args.font_size
+        )
+    elif args.command == "clear":
+        operation_name = "clear"
+        operation = lambda book: clear_range(
+            book, args.sheet, args.cell_range, args.with_style
+        )
+    elif args.command == "cell":
+        if args.cell_command == "set":
+            if args.value is None and args.font is None and args.font_size is None:
+                raise TargetError("cell set 至少指定 --value、--font 或 --font-size")
+            operation_name = "cell.set"
+            operation = lambda book: set_cell(
+                book, args.sheet, args.cell, args.value, args.type, args.font, args.font_size
+            )
+        else:
+            operation_name = "cell.clear"
+            operation = lambda book: clear_cell(book, args.sheet, args.cell)
+    elif args.command == "sheet":
+        if args.sheet_command == "add":
+            operation_name = "sheet.add"
+            operation = lambda book: sheet_add(book, args.name)
+        elif args.sheet_command == "delete":
+            operation_name = "sheet.delete"
+            operation = lambda book: sheet_delete(book, args.sheet)
+        elif args.sheet_command == "rename":
+            operation_name = "sheet.rename"
+            operation = lambda book: sheet_rename(book, args.sheet, args.name)
+        else:
+            operation_name = "sheet.copy"
+            operation = lambda book: sheet_copy(book, args.sheet, args.name)
+    else:
+        if args.row_command == "insert":
+            operation_name = "row.insert"
+            operation = lambda book: row_insert(book, args.sheet, args.before, args.count)
+        elif args.row_command == "delete":
+            operation_name = "row.delete"
+            operation = lambda book: row_delete(book, args.sheet, args.rows)
+        else:
+            operation_name = "row.copy"
+            operation = lambda book: row_copy(book, args.sheet, args.rows, args.insert_before)
+    result = edit_file(
+        args.file, args.out, args.overwrite, operation
+    )
+    result["operation"] = operation_name
+    if font_check is not None:
+        result["font_check"] = font_check
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print("成功: %s" % operation_name)
+        print("输出: %s" % result["output"])
+        print("写后验证: 通过")
+    return result
+
+
+def run_patch(args):
+    document = load_patch(args.patch)
+    try:
+        result = edit_file(
+            args.file, args.out, args.overwrite, patch_operation(document)
+        )
+    except Exception as exc:
+        if hasattr(exc, "details"):
+            raise
+        last_index = len(document["operations"]) - 1
+        raise operation_error(last_index, document["operations"][last_index], exc)
+    changes = result.pop("changes")
+    result["operation"] = "patch"
+    result.update(changes)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print("成功: patch")
+        print("操作数: %d" % result["summary"]["operation_count"])
+        print("输出: %s" % result["output"])
+        print("写后验证: 通过")
+    return result
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "view":
+            run_view(args)
+        elif args.command == "patch":
+            run_patch(args)
+        elif args.command == "sheet" and args.sheet_command == "list":
+            run_sheet_list(args)
+        elif args.command == "font" and args.font_command == "check":
+            run_font_check(args)
+        else:
+            run_edit(args)
+        return 0
+    except ExcelToolError as exc:
+        payload = {"ok": False, "error": exc.message, "code": exc.code}
+        if args.command == "patch":
+            payload.update({"operation": "patch", "published": False})
+        if hasattr(exc, "details"):
+            payload.update(exc.details)
+        if getattr(args, "json", False) or getattr(args, "json_full", False):
+            print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
+        else:
+            print("错误: %s" % exc.message, file=sys.stderr)
+        return exc.code
+    except KeyboardInterrupt:
+        print("错误: 操作已取消", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        payload = {"ok": False, "error": "操作失败: %s" % exc, "code": 5}
+        if args.command == "patch":
+            payload.update({"operation": "patch", "published": False})
+        if getattr(args, "json", False) or getattr(args, "json_full", False):
+            print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
+        else:
+            print("错误: %s" % payload["error"], file=sys.stderr)
+        return 5
+
+
+if __name__ == "__main__":
+    sys.exit(main())
