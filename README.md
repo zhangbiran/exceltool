@@ -394,7 +394,7 @@ JSON 文件。文件路径、另存和覆盖策略只放在命令行中，不写
       "op": "write",
       "sheet": "任务",
       "begin": "A10",
-      "values": [[null, null, 9999, "勋章任务", "临时验证任务"]],
+      "values": [[null, null, 1001, "示例任务", "示例说明"]],
       "font": "Microsoft YaHei",
       "font_size": 10
     }
