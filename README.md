@@ -361,7 +361,22 @@ stdin 与 view 管道：
   --with-style
 ```
 
-单个单元格也可以写成 `--range B3`。旧的 `cell set/clear` 命令继续兼容。
+### 单元格编辑
+
+设置单元格的值、类型、字体或字号：
+
+```bash
+./exceltool cell set --file book.xls --sheet Sheet1 --cell B3 \
+  --value "完成" --type string --font "微软雅黑" --font-size 12
+```
+
+清空单元格内容并保留样式：
+
+```bash
+./exceltool cell clear --file book.xls --sheet Sheet1 --cell B3
+```
+
+范围命令处理单个单元格时，也可以写成 `--range B3`。
 
 ## 事务式 Patch
 
