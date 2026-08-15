@@ -4,7 +4,7 @@ LIBDIR ?= $(PREFIX)/lib/exceltool
 INSTALL ?= install
 PLUGIN_EXCEL_SKILL ?=
 
-MODULES := __init__.py __main__.py cli.py editing.py engine.py errors.py fonts.py operations.py output.py patching.py ranges.py
+MODULES := __init__.py __main__.py cli.py editing.py engine.py errors.py fonts.py operations.py output.py patching.py ranges.py safety.py
 INSTALLED_MODULES := $(addprefix $(LIBDIR)/,$(MODULES))
 
 .PHONY: help install uninstall check sync-skill-docs check-skill-docs

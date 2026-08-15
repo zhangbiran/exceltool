@@ -20,6 +20,26 @@ class VerificationError(ExcelToolError):
         super().__init__(message, 6)
 
 
+class FormulaVerificationError(VerificationError):
+    def __init__(self, message, report, changes):
+        super().__init__(message)
+        self.details = {
+            "formula_verification": report,
+            "unexpected_formula_changes": changes,
+            "published": False,
+        }
+
+
+class InputHashMismatchError(TargetError):
+    def __init__(self, message, expected, actual):
+        super().__init__("%s: expected=%s actual=%s" % (message, expected, actual))
+        self.details = {
+            "expected_sha256": expected,
+            "actual_sha256": actual,
+            "published": False,
+        }
+
+
 class PatchOperationError(ExcelToolError):
     def __init__(self, message, code, failed_operation):
         super().__init__(message, code)

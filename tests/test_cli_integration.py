@@ -1,12 +1,18 @@
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
+from exceltool.editing import edit_file
 from exceltool.engine import LibreOfficeSession
+from exceltool.engine import Workbook
+from exceltool.errors import FormulaVerificationError, InputHashMismatchError
+from exceltool.safety import formula_policy_for_edit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -171,7 +177,23 @@ class CliIntegrationTests(unittest.TestCase):
                     '[["测试"]]', "--font", TEST_FONT, "--font-size", "14",
                     "--out", str(output), "--json",
                 )
-                self.assertTrue(json.loads(result.stdout)["verified"])
+                result_payload = json.loads(result.stdout)
+                self.assertTrue(result_payload["verified"])
+                self.assertEqual(
+                    result_payload["formula_verification"],
+                    {
+                        "checked": True,
+                        "operation_guard": "exact_outside_declared",
+                        "before_operation_count": 4,
+                        "before_save_count": 4,
+                        "after_save_count": 4,
+                        "unexpected_changes": 0,
+                    },
+                )
+                self.assertEqual(
+                    result_payload["input_sha256"],
+                    hashlib.sha256(source.read_bytes()).hexdigest(),
+                )
 
                 def assert_edit(workbook):
                     sheet = workbook.sheet("Data")
@@ -234,6 +256,136 @@ class CliIntegrationTests(unittest.TestCase):
                     "--out", str(output), "--json", expected=3,
                 )
                 self.assertNotIn("Traceback", exists.stderr)
+
+    def test_formula_guard_and_expected_sha256_for_both_formats(self):
+        for extension in (".xlsx", ".xls"):
+            with self.subTest(extension=extension):
+                source = self.directory / ("formula-guard" + extension)
+                replaced = self.directory / ("formula-replaced" + extension)
+                blocked = self.directory / ("formula-blocked" + extension)
+                create_fixture(source)
+                source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+
+                mismatch = self.run_cli(
+                    "write", "--file", str(source), "--sheet", "Data",
+                    "--begin", "B2", '[["changed"]]',
+                    "--expect-sha256", "0" * 64, "--out", str(blocked),
+                    "--json", expected=3,
+                )
+                mismatch_payload = json.loads(mismatch.stderr)
+                self.assertEqual(mismatch_payload["expected_sha256"], "0" * 64)
+                self.assertEqual(mismatch_payload["actual_sha256"], source_sha256)
+                self.assertFalse(mismatch_payload["published"])
+                self.assertFalse(blocked.exists())
+
+                invalid = self.run_cli(
+                    "write", "--file", str(source), "--sheet", "Data",
+                    "--begin", "B2", '[["changed"]]',
+                    "--expect-sha256", "bad", "--out", str(blocked),
+                    "--json", expected=3,
+                )
+                self.assertIn("64 位十六进制", invalid.stderr)
+                self.assertFalse(blocked.exists())
+
+                result = self.run_cli(
+                    "write", "--file", str(source), "--sheet", "Data",
+                    "--begin", "C2", '[["fixed"]]',
+                    "--expect-sha256", source_sha256, "--out", str(replaced),
+                    "--json",
+                )
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["input_sha256"], source_sha256)
+                self.assertEqual(
+                    payload["formula_verification"]["before_operation_count"], 4
+                )
+                self.assertEqual(
+                    payload["formula_verification"]["before_save_count"], 3
+                )
+                self.assertEqual(
+                    payload["formula_verification"]["after_save_count"], 3
+                )
+                self.assertEqual(
+                    payload["formula_verification"]["unexpected_changes"], 0
+                )
+
+                def assert_replaced(workbook):
+                    sheet = workbook.sheet("Data")
+                    self.assertEqual(sheet.getCellRangeByName("C2").String, "fixed")
+                    self.assertEqual(sheet.getCellRangeByName("C3").Formula, "=A3*2")
+                    self.assertEqual(sheet.getCellRangeByName("C4").Formula, "=A4*2")
+                    self.assertEqual(sheet.getCellRangeByName("E2").Formula, "=TRUE()")
+
+                self.inspect(replaced, assert_replaced)
+
+    def test_formula_guard_blocks_save_time_formula_to_value_for_both_formats(self):
+        for extension in (".xlsx", ".xls"):
+            with self.subTest(extension=extension):
+                source = self.directory / ("formula-corruption" + extension)
+                create_fixture(source)
+                original_bytes = source.read_bytes()
+
+                def operation(workbook):
+                    workbook.sheet("Data").getCellRangeByName("B2").String = "changed"
+                    return {}, lambda reopened: None
+
+                original_save = Workbook.save
+
+                def corrupting_save(workbook):
+                    workbook.sheet("Data").getCellRangeByName("C2").Value = 2.0
+                    original_save(workbook)
+
+                with mock.patch.object(Workbook, "save", corrupting_save):
+                    with self.assertRaises(FormulaVerificationError) as raised:
+                        edit_file(
+                            source, None, False, operation,
+                            formula_policy_for_edit(
+                                "write", "Data", begin="B2", values=[["changed"]]
+                            ),
+                        )
+                details = raised.exception.details
+                self.assertFalse(details["published"])
+                self.assertEqual(details["formula_verification"]["stage"], "save")
+                self.assertEqual(details["formula_verification"]["unexpected_changes"], 1)
+                self.assertEqual(details["unexpected_formula_changes"][0], {
+                    "stage": "save",
+                    "sheet": "Data",
+                    "cell": "C2",
+                    "before_formula": "=A2*2",
+                    "after_type": "VALUE",
+                    "after": 2,
+                })
+                self.assertEqual(source.read_bytes(), original_bytes)
+
+    def test_in_place_rejects_source_change_before_publish_for_both_formats(self):
+        for extension in (".xlsx", ".xls"):
+            with self.subTest(extension=extension):
+                source = self.directory / ("concurrent-source" + extension)
+                create_fixture(source)
+                original_bytes = source.read_bytes()
+                original_sha256 = hashlib.sha256(original_bytes).hexdigest()
+                external_bytes = original_bytes + b"external-update"
+                external_sha256 = hashlib.sha256(external_bytes).hexdigest()
+
+                def operation(workbook):
+                    workbook.sheet("Data").getCellRangeByName("B2").String = "local-edit"
+                    source.write_bytes(external_bytes)
+                    return {}, lambda reopened: None
+
+                with self.assertRaises(InputHashMismatchError) as raised:
+                    edit_file(
+                        source, None, False, operation,
+                        formula_policy_for_edit(
+                            "write", "Data", begin="B2", values=[["local-edit"]]
+                        ),
+                        original_sha256,
+                    )
+                self.assertEqual(raised.exception.code, 3)
+                self.assertEqual(raised.exception.details, {
+                    "expected_sha256": original_sha256,
+                    "actual_sha256": external_sha256,
+                    "published": False,
+                })
+                self.assertEqual(source.read_bytes(), external_bytes)
 
     def test_sheet_info_for_both_formats(self):
         sources = []
@@ -795,6 +947,15 @@ class CliIntegrationTests(unittest.TestCase):
                 )
                 payload = json.loads(result.stdout)
                 self.assertTrue(payload["verified"])
+                self.assertTrue(payload["formula_verification"]["checked"])
+                self.assertEqual(
+                    payload["formula_verification"]["operation_guard"],
+                    "structural_operations",
+                )
+                self.assertEqual(
+                    payload["formula_verification"]["before_save_count"],
+                    payload["formula_verification"]["after_save_count"],
+                )
                 self.assertEqual(payload["operation"], "patch")
                 self.assertEqual(payload["summary"]["operation_count"], 12)
                 self.assertTrue(payload["summary"]["saved_once"])

@@ -31,6 +31,7 @@ from .operations import (
 )
 from .output import render_table
 from .ranges import column_name
+from .safety import formula_policy_for_edit, formula_policy_for_patch
 
 
 class ExcelToolArgumentParser(argparse.ArgumentParser):
@@ -58,6 +59,11 @@ def add_json(parser):
 def add_edit_output(parser):
     parser.add_argument("--out", help="另存为新文件；省略时修改输入文件")
     parser.add_argument("--overwrite", action="store_true", help="允许覆盖已存在的 --out")
+    parser.add_argument(
+        "--expect-sha256",
+        action=StoreOnce,
+        help="要求输入文件匹配指定 SHA256，并保护就地发布",
+    )
     add_json(parser)
 
 
@@ -392,15 +398,22 @@ def run_edit(args):
         operation = lambda book: write_matrix(
             book, args.sheet, args.begin, matrix, args.font, args.font_size
         )
+        formula_policy = formula_policy_for_edit(
+            operation_name, args.sheet, begin=args.begin, values=matrix
+        )
     elif args.command == "style":
         operation_name = "style"
         operation = lambda book: style_range(
             book, args.sheet, args.cell_range, args.font, args.font_size
         )
+        formula_policy = formula_policy_for_edit(operation_name)
     elif args.command == "clear":
         operation_name = "clear"
         operation = lambda book: clear_range(
             book, args.sheet, args.cell_range, args.clear_style
+        )
+        formula_policy = formula_policy_for_edit(
+            operation_name, args.sheet, range_value=args.cell_range
         )
     elif args.command == "sheet":
         if args.sheet_command == "add":
@@ -415,6 +428,7 @@ def run_edit(args):
         else:
             operation_name = "sheet.copy"
             operation = lambda book: sheet_copy(book, args.sheet, args.name)
+        formula_policy = formula_policy_for_edit(operation_name)
     elif args.command == "row":
         if args.row_command == "insert":
             operation_name = "row.insert"
@@ -425,6 +439,7 @@ def run_edit(args):
         else:
             operation_name = "row.copy"
             operation = lambda book: row_copy(book, args.sheet, args.rows, args.insert_before)
+        formula_policy = formula_policy_for_edit(operation_name)
     else:
         if args.col_command == "insert":
             operation_name = "col.insert"
@@ -440,8 +455,10 @@ def run_edit(args):
             operation = lambda book: col_autofit(
                 book, args.sheet, args.cols, args.max_width_mm
             )
+        formula_policy = formula_policy_for_edit(operation_name)
     result = edit_file(
-        args.file, args.out, args.overwrite, operation
+        args.file, args.out, args.overwrite, operation,
+        formula_policy, args.expect_sha256,
     )
     result["operation"] = operation_name
     if font_check is not None:
@@ -452,6 +469,12 @@ def run_edit(args):
         print("成功: %s" % operation_name)
         print("输出: %s" % result["output"])
         print("写后验证: 通过")
+        formula_report = result["formula_verification"]
+        print("公式验证: %d -> %d，意外变化: %d" % (
+            formula_report["before_save_count"],
+            formula_report["after_save_count"],
+            formula_report["unexpected_changes"],
+        ))
     return result
 
 
@@ -459,7 +482,8 @@ def run_patch(args):
     document = load_patch(args.patch)
     try:
         result = edit_file(
-            args.file, args.out, args.overwrite, patch_operation(document)
+            args.file, args.out, args.overwrite, patch_operation(document),
+            formula_policy_for_patch(document["operations"]), args.expect_sha256,
         )
     except Exception as exc:
         if hasattr(exc, "details"):
@@ -476,6 +500,12 @@ def run_patch(args):
         print("操作数: %d" % result["summary"]["operation_count"])
         print("输出: %s" % result["output"])
         print("写后验证: 通过")
+        formula_report = result["formula_verification"]
+        print("公式验证: %d -> %d，意外变化: %d" % (
+            formula_report["before_save_count"],
+            formula_report["after_save_count"],
+            formula_report["unexpected_changes"],
+        ))
     return result
 
 

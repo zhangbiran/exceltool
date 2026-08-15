@@ -439,6 +439,8 @@ JSON 文件。文件路径、另存和覆盖策略只放在命令行中，不写
 ```
 
 第二条命令保留输入文件；`result.xls` 已存在时必须增加 `--overwrite`。
+Patch JSON 继续只描述工作簿操作；文件路径、输出、覆盖和 SHA256 前置条件都放在
+命令行。
 
 ### Patch v1 格式
 
@@ -512,6 +514,10 @@ v1 对顶层和操作字段执行严格校验，未知字段会失败，以便�
 - 任一操作失败，临时副本被丢弃，不发布部分结果。
 - 全部操作完成后只保存一次，并只重新打开一次。
 - 重开后验证最终受影响的内容、公式、明确样式、行高、列宽和 sheet 结构。
+- 所有最终公式在保存前建立快照，重开后逐个核对；公式缺失、变成常量或文本、
+  公式文本改变时不发布结果。
+- 不包含 sheet/行/列结构操作时，还会检查操作声明范围之外的公式在操作前后不变。
+  结构操作允许 LibreOffice 按操作语义移动和调整公式，但仍执行保存前后守恒。
 - 验证成功后才原子替换输入文件或发布 `--out`。
 - 默认不创建 `.bak`；是否在执行前备份仍由调用者明确决定。
 
@@ -562,6 +568,21 @@ v1 对顶层和操作字段执行严格校验，未知字段会失败，以便�
   '[[1,"苹果"]]'
 ```
 
+需要确保输入文件仍是调用者检查过的版本时，先计算 SHA256，再将其作为编辑前置
+条件：
+
+```bash
+sha256sum book.xls
+./exceltool patch --file book.xls --patch patch.json \
+  --expect-sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --json
+```
+
+`--expect-sha256` 支持所有编辑命令，必须是 64 位十六进制。哈希不匹配会在
+LibreOffice 启动前返回退出码 3。就地修改时，工具还会在发布前重新计算原路径
+SHA256；如果编辑期间文件被其他程序或 SVN 更新，则拒绝覆盖。使用 `--out` 时，
+输出基于已经通过哈希校验并复制完成的输入快照。
+
 工具不自动创建 `.bak`。是否备份由调用者在修改前明确决定，例如：
 
 ```bash
@@ -592,8 +613,17 @@ cp -- book.xls book.xls.bak
 {
   "ok": true,
   "operation": "write",
+  "input_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "output": "/path/book.xls",
   "verified": true,
+  "formula_verification": {
+    "checked": true,
+    "operation_guard": "exact_outside_declared",
+    "before_operation_count": 20,
+    "before_save_count": 20,
+    "after_save_count": 20,
+    "unexpected_changes": 0
+  },
   "changes": {
     "sheet": "Sheet1",
     "begin": "F3",
@@ -603,6 +633,15 @@ cp -- book.xls book.xls.bak
   }
 }
 ```
+
+`operation_guard` 为 `exact_outside_declared` 时，已验证非结构操作声明范围外的
+公式不变；为 `structural_operations` 时，结构操作允许调整公式坐标，但已验证
+保存前与重开后的全部最终公式一致。报告只陈述实际检查的公式，不会把未执行的
+全工作簿值、样式或合并单元格比较伪报为零差异。
+
+公式验证失败使用退出码 6，错误包含 `formula_verification` 和
+`unexpected_formula_changes`，逐项报告阶段、sheet、单元格、保存前公式及
+保存后类型和值；临时结果不会发布。
 
 错误写到 stderr：
 

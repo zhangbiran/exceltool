@@ -79,7 +79,10 @@ def operation_error(index, operation, error):
     else:
         message = "操作执行失败: %s" % error
         code = 5
-    return PatchOperationError(message, code, operation_identity(index, operation))
+    wrapped = PatchOperationError(message, code, operation_identity(index, operation))
+    if hasattr(error, "details"):
+        wrapped.details.update(error.details)
+    return wrapped
 
 
 def require_string(operation, field):
