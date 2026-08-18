@@ -622,6 +622,7 @@ cp -- book.xls book.xls.bak
     "before_operation_count": 20,
     "before_save_count": 20,
     "after_save_count": 20,
+    "normalized_string_results": 2,
     "unexpected_changes": 0
   },
   "changes": {
@@ -638,6 +639,11 @@ cp -- book.xls book.xls.bak
 公式不变；为 `structural_operations` 时，结构操作允许调整公式坐标，但已验证
 保存前与重开后的全部最终公式一致。报告只陈述实际检查的公式，不会把未执行的
 全工作簿值、样式或合并单元格比较伪报为零差异。
+
+保存 `.xls` 前，工具会依据 LibreOffice 的真实公式结果类型，原样重赋所有字符串
+结果的普通公式，规避 BIFF 导出把字符串缓存写成数值 `0` 的问题；数值、日期、
+布尔和错误结果公式不重赋。`normalized_string_results` 报告实际归一化数量。
+字符串结果数组公式不能安全逐格重赋时，工具会拒绝保存且不发布临时结果。
 
 公式验证失败使用退出码 6，错误包含 `formula_verification` 和
 `unexpected_formula_changes`，逐项报告阶段、sheet、单元格、保存前公式及

@@ -8,6 +8,7 @@ from .errors import TargetError, UnsupportedError
 from .safety import (
     assert_formula_snapshots,
     formula_verification_report,
+    normalize_xls_string_formula_results,
     verify_input_sha256,
     verify_source_unchanged,
     workbook_formula_snapshot,
@@ -75,6 +76,18 @@ def edit_file(input_path, output_path, overwrite, operation,
                         "operation",
                         policy.get("allowed_changes", {}),
                     )
+                normalized_string_results = 0
+                if source.suffix.lower() == ".xls":
+                    normalized_string_results = normalize_xls_string_formula_results(
+                        workbook
+                    )
+                    normalized_formulas = workbook_formula_snapshot(workbook)
+                    assert_formula_snapshots(
+                        planned_formulas,
+                        normalized_formulas,
+                        workbook,
+                        "normalization",
+                    )
                 workbook.save()
             finally:
                 workbook.close()
@@ -87,7 +100,11 @@ def edit_file(input_path, output_path, overwrite, operation,
                 )
                 verifier(reopened)
                 formula_report = formula_verification_report(
-                    original_formulas, planned_formulas, reopened_formulas, policy
+                    original_formulas,
+                    planned_formulas,
+                    reopened_formulas,
+                    policy,
+                    normalized_string_results,
                 )
             finally:
                 reopened.close()

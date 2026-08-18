@@ -1,11 +1,17 @@
 import hashlib
 import re
 
-from .errors import FormulaVerificationError, InputHashMismatchError, TargetError
+from .errors import (
+    FormulaVerificationError,
+    InputHashMismatchError,
+    TargetError,
+    UnsupportedError,
+)
 from .ranges import cell_range, cell_ref, column_name
 
 
 FORMULA_CELL_FLAG = 16
+FORMULA_RESULT_STRING = 2
 MAX_REPORTED_FORMULA_CHANGES = 100
 STRUCTURAL_OPERATIONS = {
     "sheet.add",
@@ -73,6 +79,40 @@ def workbook_formula_snapshot(workbook):
                         formulas[(row, col)] = cell.Formula
         snapshot[sheet_name] = formulas
     return snapshot
+
+
+# Rebuild text-result formula cells before BIFF export so Calc records a string cache.
+def normalize_xls_string_formula_results(workbook):
+    normalized = 0
+    for sheet_name in workbook.sheet_names():
+        sheet = workbook.sheet(sheet_name)
+        ranges = sheet.queryContentCells(FORMULA_CELL_FLAG).getRangeAddresses()
+        for address in ranges:
+            for row in range(address.StartRow, address.EndRow + 1):
+                for col in range(address.StartColumn, address.EndColumn + 1):
+                    cell = sheet.getCellByPosition(col, row)
+                    if cell.Type.value != "FORMULA":
+                        continue
+                    try:
+                        result_type = cell.FormulaResultType2
+                    except Exception as exc:
+                        raise UnsupportedError(
+                            "LibreOffice 无法读取公式真实结果类型，拒绝保存 .xls: %s!%s%d"
+                            % (sheet_name, column_name(col + 1), row + 1)
+                        ) from exc
+                    if result_type != FORMULA_RESULT_STRING:
+                        continue
+                    if cell.getArrayFormula():
+                        raise UnsupportedError(
+                            "字符串结果数组公式不能安全归一化，拒绝保存 .xls: %s!%s%d"
+                            % (sheet_name, column_name(col + 1), row + 1)
+                        )
+                    formula = cell.Formula
+                    cell.Formula = formula
+                    normalized += 1
+    if normalized:
+        workbook.document.calculateAll()
+    return normalized
 
 
 def formula_count(snapshot):
@@ -198,7 +238,8 @@ def assert_formula_snapshots(expected, actual, actual_workbook, stage,
     )
 
 
-def formula_verification_report(original, planned, reopened, policy):
+def formula_verification_report(original, planned, reopened, policy,
+                                normalized_string_results=0):
     return {
         "checked": True,
         "operation_guard": (
@@ -209,5 +250,6 @@ def formula_verification_report(original, planned, reopened, policy):
         "before_operation_count": formula_count(original),
         "before_save_count": formula_count(planned),
         "after_save_count": formula_count(reopened),
+        "normalized_string_results": normalized_string_results,
         "unexpected_changes": 0,
     }

@@ -54,6 +54,20 @@ def create_fixture(path, extra_sheet=False):
             workbook.close()
 
 
+# Build a workbook whose text formula cache is corrupted by an unpatched BIFF save.
+def create_string_formula_fixture(path):
+    with LibreOfficeSession() as session:
+        workbook = session.create()
+        try:
+            sheet = workbook.sheet(workbook.sheet_names()[0])
+            sheet.Name = "Data"
+            sheet.getCellRangeByName("A1").String = "前缀唯一"
+            sheet.getCellRangeByName("B1").Formula = '=A1&"_结果唯一"'
+            workbook.save_as(path)
+        finally:
+            workbook.close()
+
+
 class CliIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="exceltool-test-")
@@ -187,6 +201,7 @@ class CliIntegrationTests(unittest.TestCase):
                         "before_operation_count": 4,
                         "before_save_count": 4,
                         "after_save_count": 4,
+                        "normalized_string_results": 0,
                         "unexpected_changes": 0,
                     },
                 )
@@ -316,6 +331,30 @@ class CliIntegrationTests(unittest.TestCase):
                     self.assertEqual(sheet.getCellRangeByName("E2").Formula, "=TRUE()")
 
                 self.inspect(replaced, assert_replaced)
+
+    def test_xls_save_preserves_text_formula_cache(self):
+        source = self.directory / "formula-string-cache.xls"
+        output = self.directory / "formula-string-cache-edited.xls"
+        create_string_formula_fixture(source)
+        cached_result = "前缀唯一_结果唯一".encode("utf-16le")
+        self.assertIn(cached_result, source.read_bytes())
+
+        result = self.run_cli(
+            "row", "insert", "--file", str(source), "--sheet", "Data",
+            "--before", "3", "--out", str(output), "--json",
+        )
+        payload = json.loads(result.stdout)
+        self.assertEqual(
+            payload["formula_verification"]["normalized_string_results"], 1
+        )
+        self.assertIn(cached_result, output.read_bytes())
+
+        def assert_formula(workbook):
+            cell = workbook.sheet("Data").getCellRangeByName("B1")
+            self.assertEqual(cell.Formula, '=A1&"_结果唯一"')
+            self.assertEqual(cell.String, "前缀唯一_结果唯一")
+
+        self.inspect(output, assert_formula)
 
     def test_formula_guard_blocks_save_time_formula_to_value_for_both_formats(self):
         for extension in (".xlsx", ".xls"):

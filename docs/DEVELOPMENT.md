@@ -37,6 +37,8 @@
   属性状态；`clear.with_style=true` 仍须独立验证硬样式均已清除。
 - 全部编辑必须通过统一 safety 生命周期采集 original、planned、reopened 公式
   快照；保存边界不得只验证目标范围或抽样哨兵。
+- `.xls` 保存前必须使用 `FormulaResultType2` 精确筛选并原样重赋字符串结果公式，
+  归一化前后必须再次执行全工作簿公式快照校验；不得根据显示字符串猜测结果类型。
 - 非结构内容操作只豁免明确 write/clear 单元格；style 和 col.autofit 不得豁免
   公式。结构操作必须至少保证 planned 到 reopened 的全工作簿公式一致。
 - `--expect-sha256` 必须在 LibreOffice 启动前校验；临时副本必须匹配初始输入，
