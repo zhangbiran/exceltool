@@ -427,6 +427,18 @@ stdin 与 view 管道：
 
 单格样式也使用 `style --range B3`。工具不再维护另一套 `cell` 命令和类型参数。
 
+### 单元格批注
+
+写入单元格批注；目标已有批注时替换原文本：
+
+```bash
+./exceltool comment --file book.xls --sheet Sheet1 --cell B3 \
+  --text "由财务复核"
+```
+
+批注文本不能为空。操作只修改批注，不改变单元格的值、公式或样式，并与其他编辑
+命令一样在保存后重新打开验证。`.xls` 和 `.xlsx` 使用相同接口。
+
 ## 事务式 Patch
 
 需要连续修改一个工作簿的多个位置或多个 sheet 时，可以将操作写入一个 UTF-8
@@ -479,6 +491,7 @@ v1 对顶层和操作字段执行严格校验，未知字段会失败，以便�
 {"op":"write","sheet":"任务","begin":"A10","values":[[1001,"任务一",true],[],[1003,null,"=A3*2","'=普通文本"]],"font":"Microsoft YaHei","font_size":10}
 {"op":"style","sheet":"任务","range":"A10:K10","font":"Microsoft YaHei","font_size":10}
 {"op":"clear","sheet":"任务","range":"A10:K10","with_style":false}
+{"op":"comment","sheet":"任务","cell":"D10","text":"由负责人确认"}
 {"op":"row.insert","sheet":"任务","before":10,"count":1}
 {"op":"row.delete","sheet":"任务","rows":"10:12"}
 {"op":"row.copy","sheet":"任务","rows":"3:3","insert_before":10}
@@ -498,6 +511,7 @@ v1 对顶层和操作字段执行严格校验，未知字段会失败，以便�
   `=...` 是公式，`'=...` 是以等号开头的普通文本；`font`、`font_size` 可选。
 - `style` 至少提供 `font` 或 `font_size`。
 - `clear.with_style` 默认 `false`。
+- `comment` 写入或替换一个单元格的非空批注文本。
 - `row.insert.count` 默认 `1`。
 - `row.copy` 复制值、公式、样式和行高，相对公式由 LibreOffice 调整。
 - `col.insert.count` 默认 `1`。

@@ -27,6 +27,7 @@ from .operations import (
     sheet_rename,
     style_range,
     view_workbook,
+    write_comment,
     write_matrix,
 )
 from .output import render_table
@@ -148,6 +149,12 @@ def build_parser():
     clear.add_argument("--range", required=True, dest="cell_range", help="范围或单元格，如 B3:F10 或 B3")
     clear.add_argument("--clear-style", action="store_true", help="同时清除硬样式")
     add_edit_output(clear)
+
+    comment = commands.add_parser("comment", help="写入或替换单元格批注")
+    add_file_sheet(comment)
+    comment.add_argument("--cell", required=True, help="单元格，如 B3")
+    comment.add_argument("--text", required=True, help="批注文本")
+    add_edit_output(comment)
 
     sheet = commands.add_parser("sheet", help="sheet 查看和编辑")
     sheet_commands = sheet.add_subparsers(dest="sheet_command", required=True)
@@ -382,6 +389,7 @@ def run_find(args):
     return result
 
 
+# Dispatch one editing command through the shared transactional lifecycle.
 def run_edit(args):
     font_check = None
     requested_font = getattr(args, "font", None)
@@ -415,6 +423,12 @@ def run_edit(args):
         formula_policy = formula_policy_for_edit(
             operation_name, args.sheet, range_value=args.cell_range
         )
+    elif args.command == "comment":
+        operation_name = "comment"
+        operation = lambda book: write_comment(
+            book, args.sheet, args.cell, args.text
+        )
+        formula_policy = formula_policy_for_edit(operation_name)
     elif args.command == "sheet":
         if args.sheet_command == "add":
             operation_name = "sheet.add"

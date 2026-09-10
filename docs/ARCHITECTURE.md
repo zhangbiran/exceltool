@@ -35,6 +35,8 @@ JSON 用于审计和多 sheet 查看。每次调用只打开一个工作簿；�
 并保留三个字体脚本槽的实际值以展示回退。
 单格不建立独立编辑协议：`write` 的一格二维数组、`clear --range CELL` 和
 `style --range CELL` 分别复用矩阵写入与范围编辑路径。
+批注使用独立的 `comment --cell CELL --text TEXT` 命令，因为批注不是单元格内容或
+样式；它通过 sheet annotations 写入或替换，并在重开后同时验证批注文本与原内容。
 
 ## 写入流程
 
@@ -56,7 +58,7 @@ LibreOffice 保存时可能规范化的内部直接样式表示。行操作和 s
 允许 0.1 mm 的格式量化误差。整个 patch 仍只调用一次 `save` 和一次只读重开。
 
 公式快照通过 UNO `queryContentCells(FORMULA)` 查询公式区域，不按有效区逐格
-全量扫描。普通 write/clear 将明确内容目标加入允许变化集合；style 和
+全量扫描。普通 write/clear 将明确内容目标加入允许变化集合；style、comment 和
 col.autofit 不允许操作阶段改变公式。包含 sheet/行/列结构操作的 Patch 首版不做
 原始坐标到最终坐标的通用语义映射，但保存前最终公式到重开状态仍必须逐个一致。
 

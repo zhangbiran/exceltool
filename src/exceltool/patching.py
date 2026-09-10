@@ -21,6 +21,7 @@ from .operations import (
     sheet_rename,
     style_range,
     required_font_slots,
+    write_comment,
     write_matrix,
 )
 from .ranges import cell_range, cell_ref, col_range, column_name, column_number, row_range
@@ -30,6 +31,7 @@ OPERATION_FIELDS = {
     "write": {"id", "op", "sheet", "begin", "values", "font", "font_size"},
     "style": {"id", "op", "sheet", "range", "font", "font_size"},
     "clear": {"id", "op", "sheet", "range", "with_style"},
+    "comment": {"id", "op", "sheet", "cell", "text"},
     "row.insert": {"id", "op", "sheet", "before", "count"},
     "row.delete": {"id", "op", "sheet", "rows"},
     "row.copy": {"id", "op", "sheet", "rows", "insert_before"},
@@ -47,6 +49,7 @@ REQUIRED_FIELDS = {
     "write": {"op", "sheet", "begin", "values"},
     "style": {"op", "sheet", "range"},
     "clear": {"op", "sheet", "range"},
+    "comment": {"op", "sheet", "cell", "text"},
     "row.insert": {"op", "sheet", "before"},
     "row.delete": {"op", "sheet", "rows"},
     "row.copy": {"op", "sheet", "rows", "insert_before"},
@@ -132,6 +135,7 @@ def validate_matrix(matrix):
         raise TargetError("values 没有包含任何单元格；空行 [] 只表示跳过")
 
 
+# Validate and normalize one strict Patch v1 operation.
 def validate_operation(operation):
     if not isinstance(operation, dict):
         raise TargetError("operation 必须是 JSON 对象")
@@ -178,6 +182,10 @@ def validate_operation(operation):
         if not isinstance(with_style, bool):
             raise TargetError("with_style 必须是布尔值")
         normalized["with_style"] = with_style
+    elif op == "comment":
+        require_string(normalized, "cell")
+        cell_ref(normalized["cell"])
+        require_string(normalized, "text")
     elif op == "row.insert":
         require_positive_integer(normalized, "before")
         require_positive_integer(normalized, "count", 1)
@@ -258,6 +266,7 @@ class SheetVerificationError(VerificationError):
         self.col = col
 
 
+# Capture the stable cell state that Patch must preserve across save and reopen.
 def cell_expectation(cell):
     cell_type = cell.Type.value
     if cell_type == "VALUE":
@@ -287,14 +296,18 @@ def cell_expectation(cell):
                 properties[name] = getattr(cell, name)
     return {
         "content": content,
+        "comment": cell.Annotation.String,
         "cell_style": cell.CellStyle,
         "properties": properties,
     }
 
 
+# Compare a reopened cell with the stable Patch expectation.
 def matches_cell_expectation(cell, expected):
     actual = cell_expectation(cell)
     if actual["content"] != expected["content"]:
+        return False
+    if actual["comment"] != expected["comment"]:
         return False
     if actual["cell_style"] != expected["cell_style"]:
         return False
@@ -323,6 +336,7 @@ class VerificationPlan:
     def _touch(self, sheet, identity):
         self.last_by_sheet[sheet] = identity
 
+    # Track the final coordinates and verification owner of one applied operation.
     def record(self, operation, index, changes=None):
         identity = operation_identity(index, operation)
         op = operation["op"]
@@ -351,6 +365,11 @@ class VerificationPlan:
                         self.hard_default_cells.setdefault(sheet, set()).discard(target)
                     elif operation["with_style"]:
                         self.hard_default_cells.setdefault(sheet, set()).add(target)
+        elif op == "comment":
+            row, col = cell_ref(operation["cell"])
+            target = (row, col)
+            self.cells.setdefault(sheet, set()).add(target)
+            self.last_by_cell.setdefault(sheet, {})[target] = identity
         elif op.startswith("row."):
             if op == "row.insert":
                 self._insert_rows(sheet, operation["before"] - 1, operation["count"])
@@ -726,6 +745,7 @@ def verify_sheet_snapshot(workbook, sheet_name, expected):
             )
 
 
+# Execute one normalized Patch operation against the live workbook coordinates.
 def execute_operation(workbook, operation):
     op = operation["op"]
     if op == "write":
@@ -741,6 +761,10 @@ def execute_operation(workbook, operation):
     if op == "clear":
         return clear_range(
             workbook, operation["sheet"], operation["range"], operation["with_style"]
+        )
+    if op == "comment":
+        return write_comment(
+            workbook, operation["sheet"], operation["cell"], operation["text"]
         )
     if op == "row.insert":
         return row_insert(workbook, operation["sheet"], operation["before"], operation["count"])

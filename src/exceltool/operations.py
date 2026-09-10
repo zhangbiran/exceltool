@@ -393,6 +393,33 @@ def clear_range(workbook, sheet_name, range_value, with_style=False):
     return {"sheet": sheet_name, "range": range_value, "with_style": with_style}, verify
 
 
+# Write or replace the annotation attached to one cell without changing its value.
+def write_comment(workbook, sheet_name, cell_value, text):
+    if not isinstance(text, str) or not text:
+        raise TargetError("批注文本不能为空")
+    row, col = cell_ref(cell_value)
+    sheet = workbook.sheet(sheet_name)
+    cell = sheet.getCellByPosition(col, row)
+    expected_content = content_signature(cell)
+    sheet.Annotations.insertNew(cell.CellAddress, text)
+
+    changes = {
+        "sheet": sheet_name,
+        "cell": "%s%d" % (column_name(col + 1), row + 1),
+        "text": text,
+    }
+
+    def verify(reopened):
+        target = reopened.sheet(sheet_name).getCellByPosition(col, row)
+        address = "%s%d" % (column_name(col + 1), row + 1)
+        if content_signature(target) != expected_content:
+            raise VerificationError("写批注意外改变了单元格内容: %s!%s" % (sheet_name, address))
+        if target.Annotation.String != text:
+            raise VerificationError("批注写后验证失败: %s!%s" % (sheet_name, address))
+
+    return changes, verify
+
+
 def sheet_add(workbook, name):
     if not name:
         raise TargetError("sheet 名不能为空")

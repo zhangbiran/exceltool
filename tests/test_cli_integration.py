@@ -734,6 +734,74 @@ class CliIntegrationTests(unittest.TestCase):
         removed_cell = self.run_cli("cell", "set", "--json", expected=2)
         self.assertIn("invalid choice", json.loads(removed_cell.stderr)["error"])
 
+    def test_comment_command_and_patch_for_both_formats(self):
+        for extension in (".xlsx", ".xls"):
+            with self.subTest(extension=extension):
+                source = self.directory / ("comment-source" + extension)
+                commented = self.directory / ("commented" + extension)
+                patched = self.directory / ("comment-patched" + extension)
+                patch_file = self.directory / ("comment-patch-" + extension[1:] + ".json")
+                create_fixture(source)
+
+                result = self.run_cli(
+                    "comment", "--file", str(source), "--sheet", "Data",
+                    "--cell", "C2", "--text", "首次复核\n请确认", "--out", str(commented),
+                    "--json",
+                )
+                payload = json.loads(result.stdout)
+                self.assertEqual(payload["operation"], "comment")
+                self.assertEqual(payload["changes"]["cell"], "C2")
+                self.assertEqual(payload["changes"]["text"], "首次复核\n请确认")
+                self.assertTrue(payload["verified"])
+
+                def assert_comment(workbook):
+                    cell = workbook.sheet("Data").getCellRangeByName("C2")
+                    self.assertEqual(cell.Formula, "=A2*2")
+                    self.assertEqual(cell.Annotation.String, "首次复核\n请确认")
+
+                self.inspect(commented, assert_comment)
+                patch_file.write_text(
+                    json.dumps({
+                        "version": 1,
+                        "operations": [{
+                            "id": "replace-comment", "op": "comment", "sheet": "Data",
+                            "cell": "C2", "text": "最终批注",
+                        }],
+                    }, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                patch_result = self.run_cli(
+                    "patch", "--file", str(commented), "--patch", str(patch_file),
+                    "--out", str(patched), "--json",
+                )
+                patch_payload = json.loads(patch_result.stdout)
+                self.assertEqual(patch_payload["summary"]["operation_count"], 1)
+                self.assertEqual(patch_payload["operations"][0]["op"], "comment")
+                self.inspect(
+                    patched,
+                    lambda workbook: self.assertEqual(
+                        workbook.sheet("Data").getCellRangeByName("C2").Annotation.String,
+                        "最终批注",
+                    ),
+                )
+                self.inspect(
+                    source,
+                    lambda workbook: self.assertEqual(
+                        workbook.sheet("Data").getCellRangeByName("C2").Annotation.String,
+                        "",
+                    ),
+                )
+
+        invalid_source = self.directory / "comment-invalid.xlsx"
+        create_fixture(invalid_source)
+        original = invalid_source.read_bytes()
+        invalid = self.run_cli(
+            "comment", "--file", str(invalid_source), "--sheet", "Data",
+            "--cell", "B2", "--text", "", "--json", expected=3,
+        )
+        self.assertIn("批注文本不能为空", invalid.stderr)
+        self.assertEqual(invalid_source.read_bytes(), original)
+
     def test_practical_json_write_style_clear_and_sheet_copy(self):
         for extension in (".xlsx", ".xls"):
             with self.subTest(extension=extension):

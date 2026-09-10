@@ -17,6 +17,7 @@
 - `sheet info` 必须只读复用有效区域语义，覆盖全部 sheet、单个 sheet、缺失 sheet
   以及 `.xls/.xlsx` 的稳定 JSON 字段。
 - 样式操作只修改明确指定的属性。
+- 批注操作只接受单个单元格和非空文本；必须验证保存后的批注文本及原单元格内容。
 - 字体写入前必须精确解析 fontconfig；文本样式使用整段 text cursor，验证错误必须
   按内容脚本检查 Western/Asian/Complex 相关槽，并包含具体 sheet、单元格、请求值
   和保存后的三槽实际值。
@@ -39,7 +40,7 @@
   快照；保存边界不得只验证目标范围或抽样哨兵。
 - `.xls` 保存前必须使用 `FormulaResultType2` 精确筛选并原样重赋字符串结果公式，
   归一化前后必须再次执行全工作簿公式快照校验；不得根据显示字符串猜测结果类型。
-- 非结构内容操作只豁免明确 write/clear 单元格；style 和 col.autofit 不得豁免
+- 非结构内容操作只豁免明确 write/clear 单元格；style、comment 和 col.autofit 不得豁免
   公式。结构操作必须至少保证 planned 到 reopened 的全工作簿公式一致。
 - `--expect-sha256` 必须在 LibreOffice 启动前校验；临时副本必须匹配初始输入，
   就地发布前必须再次核对源路径，失败不得发布。
