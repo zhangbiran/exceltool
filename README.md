@@ -39,6 +39,15 @@ ExcelTool 也提供机器可读的精确匹配检查：
 结果包含 `requested`、系统实际 `resolved`、`available` 和 `exact`。设置字体前会
 执行相同检查；不能精确匹配时在修改前退出，不会静默使用替代字体。
 
+所有读取或修改工作簿的命令都会取得当前操作系统用户的全局命令锁，并持有到
+LibreOffice、UNO、验证和发布全部结束。若已有命令运行，新进程会在 stderr 提示一次
+`ExcelTool 正被其他任务使用，等待前一个任务完成……`，随后等待并自动继续；正常退出
+和异常终止都会由操作系统释放锁。`--help`、`--version` 和 `font check` 不使用该锁。
+
+调用方仍应串行执行命令，不要主动并发或在等待时启动重试；这可以保持资源占用、输入
+版本、发布顺序和验证结果明确。同一工作簿的多项连续修改使用一次 `patch`，多个工作簿
+按明确清单逐个处理。不要删除、替换或绕过工具的命令锁。
+
 全局安装到 `/usr/local`：
 
 ```bash
@@ -55,17 +64,6 @@ sudo make uninstall
 
 也可在仓库根目录直接使用 `./exceltool`。下文均采用这种形式；全局安装后可将
 `./exceltool` 替换为 `exceltool`。
-
-向 `zhang-tools` 的 Excel Skill 同步本文档：
-
-```bash
-make sync-skill-docs \
-  PLUGIN_EXCEL_SKILL=/path/to/codex-marketplace/plugins/zhang-tools/skills/excel
-make check-skill-docs \
-  PLUGIN_EXCEL_SKILL=/path/to/codex-marketplace/plugins/zhang-tools/skills/excel
-```
-
-插件中的 `references/cli.md` 是生成副本，不应手工修改。
 
 ## 查看
 
@@ -686,6 +684,8 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 部分受限沙箱会禁止 LibreOffice 启动子进程或创建本地 UNO socket，并返回
 `Operation not permitted`。这时需按宿主环境规则授权 `exceltool` 在允许启动
 LibreOffice 的环境执行；不要绕过权限或把该错误当作工作簿损坏。
+
+## 项目开发文档
 
 稳定决策见 [项目范围](docs/PROJECT.md)、[架构](docs/ARCHITECTURE.md) 和
 [开发规范](docs/DEVELOPMENT.md)。

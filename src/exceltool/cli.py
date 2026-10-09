@@ -8,6 +8,7 @@ from .editing import edit_file, validate_input
 from .engine import LibreOfficeSession
 from .errors import ExcelToolError, TargetError
 from .fonts import inspect_font
+from .locking import workbook_command_lock
 from .patching import load_patch, operation_error, patch_operation
 from .operations import (
     clear_range,
@@ -527,20 +528,22 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if args.command == "view":
-            run_view(args)
-        elif args.command == "patch":
-            run_patch(args)
-        elif args.command == "sheet" and args.sheet_command == "list":
-            run_sheet_list(args)
-        elif args.command == "sheet" and args.sheet_command == "info":
-            run_sheet_info(args)
-        elif args.command == "font" and args.font_command == "check":
+        if args.command == "font" and args.font_command == "check":
             run_font_check(args)
-        elif args.command == "find":
-            run_find(args)
         else:
-            run_edit(args)
+            with workbook_command_lock():
+                if args.command == "view":
+                    run_view(args)
+                elif args.command == "patch":
+                    run_patch(args)
+                elif args.command == "sheet" and args.sheet_command == "list":
+                    run_sheet_list(args)
+                elif args.command == "sheet" and args.sheet_command == "info":
+                    run_sheet_info(args)
+                elif args.command == "find":
+                    run_find(args)
+                else:
+                    run_edit(args)
         return 0
     except ExcelToolError as exc:
         payload = {"ok": False, "error": exc.message, "code": exc.code}

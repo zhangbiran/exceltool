@@ -22,6 +22,9 @@
   按内容脚本检查 Western/Asian/Complex 相关槽，并包含具体 sheet、单元格、请求值
   和保存后的三槽实际值。
 - 一次命令只描述一个可审计操作，不使用跨进程剪贴板状态。
+- 除 `--help`、`--version` 和 `font check` 外，所有 CLI 命令必须在输入校验和
+  LibreOffice 启动前取得当前用户的全局排他锁，并持有到命令返回与资源清理结束。
+  竞争时只提示一次并阻塞等待，不轮询、不超时重试；进程退出依赖内核自动释放锁。
 - 列宽只在显式 `col autofit` 中自适应；最大宽度按 1/100 mm 计算，往返验证允许
   `.xls/.xlsx` 最多 0.1 mm 的格式量化误差。
 - 列宽机器输出必须区分操作时 `width_mm` 和重开后 `actual_width_mm`；Patch 后续
@@ -58,9 +61,6 @@ PYTHONPATH=src python3 -m exceltool --help
 
 `Makefile` 默认安装到 `/usr/local/bin/exceltool` 和 `/usr/local/lib/exceltool`；
 开发验证可通过临时 `PREFIX` 执行安装、入口和卸载往返，避免写入系统目录。
-README 是 Excel Skill 命令参考的正本；通过 `make sync-skill-docs` 生成插件副本，
-通过 `make check-skill-docs` 阻止文档漂移。两个目标都必须显式传入插件 Skill
-目录，不在仓库中固化本机路径。
 
 集成测试必须覆盖 `.xls/.xlsx`、纯 JSON 与 json-full、三种 write 输入、空行与
 null、公式和字面 `=` 文本、单格/范围样式与清空、样式查看、字体预检、sheet 信息、
@@ -70,5 +70,7 @@ sheet、行、列、查找、正则及其共用范围、常见失败和未修改
 公式安全测试还必须覆盖双格式未声明公式守恒、目标公式允许替换、结构 Patch 保存
 边界、公式转常量差异定位、错误/正确 SHA256 和编辑期间源文件变化拒绝。
 LibreOffice 进程与临时用户配置必须由测试清理。
+命令锁测试必须覆盖同文件并发写入、等待后读取、不同文件共享全局锁、持锁进程异常
+退出、快速连续调用和免锁命令；原有外部修改 SHA 防护仍须保持有效。
 
 未经用户明确要求，不 commit、push、创建远端或发布包。
