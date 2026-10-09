@@ -6,16 +6,18 @@ JSON 批量写入、查找、范围样式、sheet/行/列结构操作，以及�
 
 ## 开始使用
 
-依赖、源码安装、全局安装、升级、卸载和字体配置见 [安装说明](INSTALL.md)。
+依赖、源码安装、升级、卸载和字体配置见 [Linux 安装说明](INSTALL_LINUX.md)或
+[Windows 安装说明](INSTALL_WINDOWS.md)。
 
-在仓库根目录可以直接运行：
+Linux 在仓库根目录可以直接运行：
 
 ```bash
 ./exceltool --version
 ./exceltool --help
 ```
 
-下文均使用 `./exceltool`；安装到 `PATH` 后可替换为 `exceltool`。
+Windows 使用 `exceltool.cmd`，安装到 `PATH` 后使用 `exceltool`。下文统一展示
+`./exceltool`；Windows 调用时替换为 `exceltool`，命令参数保持一致。
 
 所有读取或修改工作簿的命令都会取得当前操作系统用户的全局命令锁，并持有到
 LibreOffice、UNO、验证和发布全部结束。若已有命令运行，新进程会在 stderr 提示一次

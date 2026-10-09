@@ -1,6 +1,6 @@
-# ExcelTool 安装说明
+# ExcelTool Linux 安装说明
 
-本文说明 ExcelTool 的运行依赖、安装、升级、卸载和可选字体配置。命令使用方式见
+本文说明 ExcelTool 在 Linux 上的运行依赖、安装、升级、卸载和可选字体配置。命令使用方式见
 [README](README.md)。
 
 ## 运行依赖

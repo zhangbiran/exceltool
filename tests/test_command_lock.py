@@ -1,9 +1,11 @@
 import json
 import os
+import queue
 import select
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -12,6 +14,12 @@ from exceltool.engine import LibreOfficeSession
 
 ROOT = Path(__file__).resolve().parents[1]
 WAIT_MESSAGE = "ExcelTool 正被其他任务使用，等待前一个任务完成……"
+TEST_FONT = "Microsoft YaHei" if os.name == "nt" else "sans"
+PYTHON_EXECUTABLE = (
+    str(Path(sys.executable).parent / "python.exe")
+    if os.name == "nt" and Path(sys.executable).is_dir()
+    else sys.executable
+)
 
 
 def create_fixture(path):
@@ -37,14 +45,33 @@ class CommandLockTests(unittest.TestCase):
     def tearDown(self):
         for process in self.holders:
             if process.poll() is None:
-                process.terminate()
+                self.terminate_process(process)
             process.communicate(timeout=5)
         self.temp.cleanup()
 
+    def terminate_process(self, process):
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            process.kill()
+
     def command(self, *arguments):
-        return [sys.executable, "-m", "exceltool"] + list(arguments)
+        return [PYTHON_EXECUTABLE, "-m", "exceltool"] + list(arguments)
 
     def read_line(self, stream, timeout=10):
+        if os.name == "nt":
+            lines = queue.Queue()
+            reader = threading.Thread(target=lambda: lines.put(stream.readline()), daemon=True)
+            reader.start()
+            try:
+                return lines.get(timeout=timeout).rstrip("\r\n")
+            except queue.Empty:
+                self.fail("等待子进程输出超时")
         ready, _, _ = select.select([stream], [], [], timeout)
         self.assertTrue(ready, "等待子进程输出超时")
         return stream.readline().rstrip("\r\n")
@@ -61,7 +88,7 @@ class CommandLockTests(unittest.TestCase):
             " while not marker.exists(): time.sleep(0.02)\n"
         )
         process = subprocess.Popen(
-            [sys.executable, "-c", script, str(release)],
+            [PYTHON_EXECUTABLE, "-c", script, str(release)],
             env=self.env,
             text=True,
             stdout=subprocess.PIPE,
@@ -78,7 +105,7 @@ class CommandLockTests(unittest.TestCase):
         self.assertEqual(stdout, "")
         self.assertEqual(stderr, "")
 
-    def run_cli(self, *arguments, timeout=20):
+    def run_cli(self, *arguments, timeout=45 if os.name == "nt" else 20):
         return subprocess.run(
             self.command(*arguments),
             env=self.env,
@@ -188,7 +215,7 @@ class CommandLockTests(unittest.TestCase):
         workbook = self.directory / "abnormal-release.xlsx"
         create_fixture(workbook)
         holder, _ = self.start_holder()
-        holder.kill()
+        self.terminate_process(holder)
         holder.communicate(timeout=5)
         result = self.run_cli(
             "view", "--file", str(workbook), "--sheet", "Data",
@@ -202,7 +229,7 @@ class CommandLockTests(unittest.TestCase):
         for arguments in (
             ("--help",),
             ("--version",),
-            ("font", "check", "--name", "sans", "--json"),
+            ("font", "check", "--name", TEST_FONT, "--json"),
         ):
             with self.subTest(arguments=arguments):
                 result = self.run_cli(*arguments, timeout=5)

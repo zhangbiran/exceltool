@@ -14,7 +14,8 @@ LibreOffice 和 `python3-uno`。代价是存在外部进程依赖，保存时也
 - `cli.py`：命令、参数、JSON、退出码。
 - `engine.py`：启动隔离 LibreOffice、UNO 连接、工作簿读写与低层操作。
 - `operations.py`：查看、查找、矩阵/范围、sheet、行和列的用户语义。
-- `fonts.py`：通过 fontconfig 精确检查请求字体与系统解析字体。
+- `fonts.py`：在 Unix-like 系统通过 fontconfig、在 Windows 通过字体注册表精确检查
+  请求字体与系统解析字体。
 - `locking.py`：按操作系统用户隔离工作簿命令，处理竞争等待和异常退出释放。
 - `editing.py`：临时副本、原子发布和写后验证。
 - `patching.py`：Patch v1 严格校验、顺序分派、失败定位和最终状态验证计划。
@@ -27,14 +28,20 @@ LibreOffice 和 `python3-uno`。代价是存在外部进程依赖，保存时也
 CLI 在校验工作簿输入之前取得当前操作系统用户的全局排他锁，并持有到命令分派、
 LibreOffice 关闭、临时资源清理、验证和发布全部结束。锁优先放在 `/run/user/<uid>`；
 该目录不可用时使用 `/tmp` 下仅当前用户可访问的 `exceltool-<uid>` 目录。锁文件
-可以长期存在，互斥状态由内核维护；进程正常退出、异常退出或被终止时，文件描述符
-关闭，锁自动释放。
+可以长期存在，互斥状态由内核维护；Windows 使用当前用户临时目录中的锁文件和
+`msvcrt` 字节锁。进程正常退出、异常退出或被终止时，文件描述符关闭，锁自动释放。
+
+Windows 使用 `soffice.com` 启动独立 LibreOffice 进程，服务端 UNO accept 字符串不带
+对象名，客户端解析地址仍请求 `StarOffice.ComponentContext`。Windows 启动允许更长的
+UNO 就绪时间，并抑制打印机枚举；进程退出后对短暂占用的用户 profile 执行有限清理
+重试。其他平台继续使用 `soffice` 和原有 UNO 参数。
 
 读取和编辑工作簿共用同一把排他锁，因此不同工作簿也会串行。竞争者先做一次非阻塞
 尝试，失败时只提示一次，然后阻塞等待，不轮询或自行重试。`--help`、`--version` 在
 参数层直接结束，`font check` 只访问 fontconfig，三者不取得工作簿锁。调用方仍按串行
 方式使用 ExcelTool；同一工作簿的连续修改通过单次 Patch 合并，多个工作簿按清单逐个
-处理，使资源占用、输入版本和发布顺序保持可判断。
+处理，使资源占用、输入版本和发布顺序保持可判断。Windows 锁等待使用有界间隔轮询
+`msvcrt` 非阻塞锁，因为该 API 没有等价的阻塞调用；调用方仍只收到一次等待提示。
 
 二维 JSON 是命令层的稳定数据边界：空值、数字、布尔、文本和公式由统一编解码
 规则转换，不暴露 UNO 的 `CellContentType`。裸 JSON 用于单 sheet 管道，带元数据

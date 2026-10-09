@@ -31,6 +31,8 @@ ExcelTool 为人和 AI Agent 提供确定、可脚本化的 Excel CLI，避免�
 - 成功和失败 JSON 明确报告公式检查计数、意外变化及输入 SHA256。
 - JSON 结果、稳定退出码、安全输出和写后重读验证。
 - `--out` 仅同格式另存，不承担格式转换。
+- Linux 与 Windows 原生环境使用同一命令语义；平台差异只限于 LibreOffice 启动、
+  UNO、命令锁、字体发现、临时资源清理和启动入口。
 
 ## 原则
 
@@ -62,3 +64,5 @@ ExcelTool 为人和 AI Agent 提供确定、可脚本化的 Excel CLI，避免�
 - `view --json | write --stdin` 能在两种格式间回写值与公式文本。
 - 输出能由 LibreOffice 重新打开，目标改变正确，未修改哨兵值保持不变。
 - patch 任一操作失败时不发布；成功时只保存一次并在最终状态统一验证。
+- Windows 用户级 CMD 启动器能够通过 LibreOffice 自带 Python 运行，中文输出、字体检查、
+  打印机枚举抑制、UNO 连接、命令锁和临时 profile 清理均有真实验证。

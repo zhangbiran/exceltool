@@ -50,21 +50,33 @@ class LibreOfficeSession:
         port = free_port()
         self.profile = tempfile.TemporaryDirectory(prefix="exceltool-lo-")
         profile_url = file_url(self.profile.name)
+        accept = (
+            "--accept=socket,host=127.0.0.1,port=%d;urp;" % port
+            if os.name == "nt"
+            else "--accept=socket,host=127.0.0.1,port=%d;urp;StarOffice.ComponentContext" % port
+        )
         command = [
-            "soffice",
+            "soffice.com" if os.name == "nt" else "soffice",
             "--headless",
             "--nologo",
             "--nodefault",
             "--nofirststartwizard",
             "--norestore",
             "-env:UserInstallation=%s" % profile_url,
-            "--accept=socket,host=127.0.0.1,port=%d;urp;StarOffice.ComponentContext" % port,
+            accept,
         ]
+        environment = None
+        if os.name == "nt":
+            environment = os.environ.copy()
+            environment["SAL_DISABLE_SYNCHRONOUS_PRINTER_DETECTION"] = "1"
+            environment["SAL_DISABLE_PRINTERLIST"] = "1"
+            environment["SAL_DISABLE_DEFAULTPRINTER"] = "1"
         try:
             self.process = subprocess.Popen(
                 command,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
+                env=environment,
             )
         except OSError as exc:
             raise UnsupportedError("无法启动 LibreOffice: %s" % exc)
@@ -74,7 +86,8 @@ class LibreOfficeSession:
             "com.sun.star.bridge.UnoUrlResolver", local_context
         )
         last_error = None
-        for _ in range(80):
+        attempts = 600 if os.name == "nt" else 80
+        for _ in range(attempts):
             if self.process.poll() is not None:
                 break
             try:
@@ -141,7 +154,15 @@ class LibreOfficeSession:
                 self.process.stderr.close()
             self.process = None
         if self.profile is not None:
-            self.profile.cleanup()
+            attempts = 100 if os.name == "nt" else 1
+            for attempt in range(attempts):
+                try:
+                    self.profile.cleanup()
+                    break
+                except PermissionError:
+                    if attempt + 1 == attempts:
+                        raise
+                    time.sleep(0.1)
             self.profile = None
 
     def __exit__(self, exc_type, exc, traceback):

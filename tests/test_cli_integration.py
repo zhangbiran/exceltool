@@ -17,6 +17,11 @@ from exceltool.safety import formula_policy_for_edit
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_FONT = "Microsoft YaHei"
+PYTHON_EXECUTABLE = (
+    str(Path(sys.executable).parent / "python.exe")
+    if os.name == "nt" and Path(sys.executable).is_dir()
+    else sys.executable
+)
 
 
 def create_fixture(path, extra_sheet=False):
@@ -79,7 +84,7 @@ class CliIntegrationTests(unittest.TestCase):
         self.temp.cleanup()
 
     def run_cli(self, *arguments, expected=0, input_text=None):
-        command = [sys.executable, "-m", "exceltool"] + list(arguments)
+        command = [PYTHON_EXECUTABLE, "-m", "exceltool"] + list(arguments)
         result = subprocess.run(
             command,
             env=self.env,

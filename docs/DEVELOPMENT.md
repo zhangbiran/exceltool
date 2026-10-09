@@ -2,7 +2,8 @@
 
 ## 环境与边界
 
-- Python 3.8+；保持标准库实现，UNO 由系统 LibreOffice 提供。
+- Python 3.8+；保持标准库实现。Linux 使用系统 Python/UNO，Windows 使用 LibreOffice
+  自带 Python/UNO。
 - 正式代码在 `src/exceltool/`，测试在 `tests/`。
 - 测试只修改临时目录中的合成工作簿。
 - `.zhang-dev/` 是外层 Git 忽略的本机工作流目录。
@@ -18,13 +19,15 @@
   以及 `.xls/.xlsx` 的稳定 JSON 字段。
 - 样式操作只修改明确指定的属性。
 - 批注操作只接受单个单元格和非空文本；必须验证保存后的批注文本及原单元格内容。
-- 字体写入前必须精确解析 fontconfig；文本样式使用整段 text cursor，验证错误必须
+- 字体写入前必须在 Linux 精确解析 fontconfig、在 Windows 精确匹配系统字体注册表；
+  文本样式使用整段 text cursor，验证错误必须
   按内容脚本检查 Western/Asian/Complex 相关槽，并包含具体 sheet、单元格、请求值
   和保存后的三槽实际值。
 - 一次命令只描述一个可审计操作，不使用跨进程剪贴板状态。
 - 除 `--help`、`--version` 和 `font check` 外，所有 CLI 命令必须在输入校验和
   LibreOffice 启动前取得当前用户的全局排他锁，并持有到命令返回与资源清理结束。
-  竞争时只提示一次并阻塞等待，不轮询、不超时重试；进程退出依赖内核自动释放锁。
+  竞争时只提示一次并等待，不对工作簿命令启动重试；Windows 可以为适配 `msvcrt`
+  字节锁在锁实现内部做短间隔等待。进程退出依赖操作系统释放锁。
 - 列宽只在显式 `col autofit` 中自适应；最大宽度按 1/100 mm 计算，往返验证允许
   `.xls/.xlsx` 最多 0.1 mm 的格式量化误差。
 - 列宽机器输出必须区分操作时 `width_mm` 和重开后 `actual_width_mm`；Patch 后续
@@ -72,5 +75,7 @@ sheet、行、列、查找、正则及其共用范围、常见失败和未修改
 LibreOffice 进程与临时用户配置必须由测试清理。
 命令锁测试必须覆盖同文件并发写入、等待后读取、不同文件共享全局锁、持锁进程异常
 退出、快速连续调用和免锁命令；原有外部修改 SHA 防护仍须保持有效。
+Windows 还必须覆盖 `msvcrt` 锁、`soffice.com`/UNO accept 参数、打印机环境变量、字体
+注册表精确匹配、UTF-8 启动器和短暂 profile 占用清理。
 
 未经用户明确要求，不 commit、push、创建远端或发布包。
