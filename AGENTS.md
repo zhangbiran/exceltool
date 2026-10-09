@@ -9,8 +9,6 @@
 3. `docs/ARCHITECTURE.md`
 4. `docs/DEVELOPMENT.md`
 
-个人使用 Zhang Dev 时，再显式阅读本地 `.zhang-dev/AGENTS.md`；它不能覆盖本文件。
-
 同时检查当前工作区和最近提交，保留用户已有改动。
 
 ## 工程标准
@@ -26,7 +24,4 @@
 
 - `README.md` 是使用说明。
 - `docs/` 是稳定项目知识库。
-- `.zhang-dev/` 是外层仓库忽略的 AI 工作区，不得进入业务仓库提交；经用户明确选择时可作为独立私人 Git 仓库管理稳定资产。
-- `.zhang-dev/01-docs/` 保存只读原始输入，`02-work/` 按原文档路径保存分析、计划、审查、测试和 `step.txt`。
-- `.zhang-dev/context/` 保存项目上下文，`guides/workflow.md` 保存 Step 和门禁，其他 `guides/<name>.md` 保存工作流所用专项 Skill 的项目规范。
-- `.zhang-dev/03-mock/` 和 `tools/` 保存本地可复用验证资产与辅助工具，`tmp/` 只放临时文件。
+- 本地 AI 工作区不得进入业务仓库提交。
