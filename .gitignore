@@ -9,3 +9,6 @@ dist/
 .venv/
 *.bak
 *.tmp
+*.ttf
+*.ttc
+*.otf

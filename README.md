@@ -4,40 +4,18 @@
 JSON 批量写入、查找、范围样式、sheet/行/列结构操作，以及单工作簿事务式 patch，调用者
 无需为每次修改临时编写脚本。
 
-## 环境与启动
+## 开始使用
 
-- Python 3.8+
-- LibreOffice Calc
-- 与 LibreOffice 匹配的 Python UNO bridge（Ubuntu 包：`python3-uno`）
+依赖、源码安装、全局安装、升级、卸载和字体配置见 [安装说明](INSTALL.md)。
 
-Ubuntu/Debian 安装：
+在仓库根目录可以直接运行：
 
 ```bash
-sudo apt update
-sudo apt install libreoffice-calc python3-uno
-```
-
-环境检查：
-
-```bash
-python3 --version
-soffice --version
-python3 -c 'import uno; print("UNO OK")'
 ./exceltool --version
 ./exceltool --help
 ```
 
-`python3-uno` 通常绑定系统 Python，请勿用 `pip install uno` 代替。如果虚拟环境
-中无法 `import uno`，请退出虚拟环境，或使用 `/usr/bin/python3 ./exceltool`。
-精确设置字体时，系统中还需安装对应字体；可用 `fc-match "字体名"` 检查。
-ExcelTool 也提供机器可读的精确匹配检查：
-
-```bash
-./exceltool font check --name "微软雅黑" --json
-```
-
-结果包含 `requested`、系统实际 `resolved`、`available` 和 `exact`。设置字体前会
-执行相同检查；不能精确匹配时在修改前退出，不会静默使用替代字体。
+下文均使用 `./exceltool`；安装到 `PATH` 后可替换为 `exceltool`。
 
 所有读取或修改工作簿的命令都会取得当前操作系统用户的全局命令锁，并持有到
 LibreOffice、UNO、验证和发布全部结束。若已有命令运行，新进程会在 stderr 提示一次
@@ -47,23 +25,6 @@ LibreOffice、UNO、验证和发布全部结束。若已有命令运行，新进
 调用方仍应串行执行命令，不要主动并发或在等待时启动重试；这可以保持资源占用、输入
 版本、发布顺序和验证结果明确。同一工作簿的多项连续修改使用一次 `patch`，多个工作簿
 按明确清单逐个处理。不要删除、替换或绕过工具的命令锁。
-
-全局安装到 `/usr/local`：
-
-```bash
-sudo make install
-exceltool --version
-exceltool --help
-```
-
-卸载：
-
-```bash
-sudo make uninstall
-```
-
-也可在仓库根目录直接使用 `./exceltool`。下文均采用这种形式；全局安装后可将
-`./exceltool` 替换为 `exceltool`。
 
 ## 查看
 
