@@ -158,6 +158,23 @@ ExcelTool 或其他 Git 仓库。
 
 ## 常见问题
 
+### 轻量 daemon 状态与诊断
+
+工作簿命令会自动启动当前用户的 daemon，不安装 Windows 服务，也不需要管理员
+权限。实例文件由 daemon 维护在 `%LOCALAPPDATA%\ExcelTool\runtime\daemon.json`，
+CLI 仍会使用真实握手判断存活，不只看文件或 PID。
+
+```powershell
+exceltool daemon start
+exceltool daemon status --json
+exceltool daemon stop
+exceltool --no-daemon view --file '.\book.xls' --sheet 'Sheet1'
+```
+
+默认命令会关闭工作簿但保留专属 LibreOffice，空闲 300 秒后两者退出。
+daemon 使用 Job Object 拥有它创建的 LibreOffice 进程树，不会扫描或结束用户手动
+打开的 LibreOffice。
+
 ### `ModuleNotFoundError: No module named 'fcntl'`
 
 说明运行的是尚未包含 Windows 命令锁的旧版源码。更新 ExcelTool，并确认
@@ -192,7 +209,21 @@ exceltool --version
 exceltool font check --name 'Microsoft YaHei' --json
 exceltool sheet list --file '.\book.xls' --json
 exceltool view --file '.\book.xls' --sheet 'Sheet1' --range 'A1:C5' --json-full
+exceltool daemon status --json
 ```
+
+仓库还提供一次性验收脚本，它会执行两次 `view`、独占打开检查、正常 stop，然后
+强制结束测试中的 daemon 以验证 Job Object 清理。它不修改工作簿，但会停止当前
+ExcelTool daemon，因此应在没有其他 ExcelTool 命令运行时执行：
+
+```powershell
+& '.\scripts\validate_daemon_windows.ps1' `
+  -File "$env:USERPROFILE\Desktop\l凛冬降临.xls" `
+  -Sheet '常量表' -Range 'A1:C5'
+```
+
+成功时输出 `ok: true`、首次/第二次耗时、复用的 PID/generation、文件释放、正常
+stop 和崩溃清理结果。请保留这段 JSON 作为 Windows 验收证据。
 
 编辑验证使用副本或明确授权的测试文件，并要求：
 
@@ -200,4 +231,7 @@ exceltool view --file '.\book.xls' --sheet 'Sheet1' --range 'A1:C5' --json-full
 - `formula_verification.checked: true`；
 - `formula_verification.unexpected_changes: 0`；
 - 修改后用有界 `view --json-full --include-style` 回读目标范围；
-- 命令结束后没有残留 `soffice` 或 `soffice.bin` 进程。
+- 连续两次 `view` 的 `libreoffice.generation`、`pid` 保持相同；
+- 命令结束后目标工作簿可重命名或独占打开；
+- `exceltool daemon stop` 后 daemon 及它创建的 `soffice.com`/`soffice.bin` 全部退出；
+- 强制结束 daemon 进程后，Job Object 仍清理其专属 LibreOffice 进程树。

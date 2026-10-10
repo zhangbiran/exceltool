@@ -144,3 +144,18 @@ exceltool --help
 
 使用字体编辑时，再执行目标字体的 `font check`。安装完成后的命令使用和安全约束见
 [README](README.md)。
+
+## 轻量 daemon
+
+工作簿命令会自动启动当前用户的 daemon，无需 systemd 或 root。默认运行目录为
+安全的 `$XDG_RUNTIME_DIR/exceltool`；它不可用时退回 `/tmp/exceltool-<uid>/runtime`。
+
+```bash
+exceltool daemon start
+exceltool daemon status --json
+exceltool daemon stop
+exceltool --no-daemon view --file book.xls --sheet Sheet1
+```
+
+daemon 只管理专属 LibreOffice，不会连接或结束用户手动打开的 LibreOffice。
+正常命令关闭工作簿但复用 LibreOffice，空闲 300 秒后 daemon 自动退出。

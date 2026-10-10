@@ -3,7 +3,7 @@ BINDIR ?= $(PREFIX)/bin
 LIBDIR ?= $(PREFIX)/lib/exceltool
 INSTALL ?= install
 
-MODULES := __init__.py __main__.py cli.py editing.py engine.py errors.py fonts.py locking.py operations.py output.py patching.py ranges.py safety.py
+MODULES := __init__.py __main__.py cli.py daemon.py daemon_client.py daemon_protocol.py daemon_runtime.py editing.py engine.py errors.py fonts.py locking.py operations.py output.py patching.py process_guard.py process_management.py ranges.py safety.py windows_job.py
 INSTALLED_MODULES := $(addprefix $(LIBDIR)/,$(MODULES))
 
 .PHONY: help install uninstall check

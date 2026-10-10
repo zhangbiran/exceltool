@@ -1,11 +1,19 @@
 import argparse
 import json
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 from . import __version__
+from .daemon import serve_daemon
+from .daemon_client import (
+    DaemonLease,
+    daemon_status,
+    daemon_stop,
+    ensure_daemon,
+)
 from .editing import edit_file, validate_input
-from .engine import LibreOfficeSession
+from .engine import LibreOfficeConnection, LibreOfficeSession
 from .errors import ExcelToolError, TargetError
 from .fonts import inspect_font
 from .locking import workbook_command_lock
@@ -112,7 +120,22 @@ def window_options(args):
 def build_parser():
     parser = ExcelToolArgumentParser(prog="exceltool", description="查看和局部编辑 .xls/.xlsx")
     parser.add_argument("--version", action="version", version="exceltool %s" % __version__)
+    parser.add_argument(
+        "--no-daemon",
+        action="store_true",
+        help="不使用常驻 daemon，按一次一启、一次一关方式执行",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
+
+    daemon = commands.add_parser("daemon", help="管理用户级 LibreOffice daemon")
+    daemon_commands = daemon.add_subparsers(dest="daemon_command", required=True)
+    daemon_start = daemon_commands.add_parser("start", help="启动或确认 daemon 就绪")
+    add_json(daemon_start)
+    daemon_status_parser = daemon_commands.add_parser("status", help="查看 daemon 状态")
+    add_json(daemon_status_parser)
+    daemon_stop_parser = daemon_commands.add_parser("stop", help="安全停止 daemon")
+    add_json(daemon_stop_parser)
+    daemon_commands.add_parser("serve", help=argparse.SUPPRESS)
 
     view = commands.add_parser("view", help="查看工作簿局部区域")
     add_file(view)
@@ -244,7 +267,7 @@ def build_parser():
     return parser
 
 
-def run_view(args):
+def run_view(args, session=None):
     if args.include_style and not args.json_full:
         raise TargetError("--include-style 必须与 --json-full 一起使用")
     options = window_options(args)
@@ -255,8 +278,9 @@ def run_view(args):
     path = validate_input(args.file)
     if args.json and not args.sheet:
         raise TargetError("view --json 必须明确指定一个 --sheet；多 sheet 请使用 --json-full")
-    with LibreOfficeSession() as session:
-        workbook = session.load(path, read_only=True)
+    context = LibreOfficeSession() if session is None else nullcontext(session)
+    with context as active_session:
+        workbook = active_session.load(path, read_only=True)
         try:
             sheets = view_workbook(workbook, args.sheet, options)
         finally:
@@ -309,10 +333,11 @@ def load_write_data(args):
         raise TargetError("无法读取二维 JSON: %s" % exc)
 
 
-def run_sheet_list(args):
+def run_sheet_list(args, session=None):
     path = validate_input(args.file)
-    with LibreOfficeSession() as session:
-        workbook = session.load(path, read_only=True)
+    context = LibreOfficeSession() if session is None else nullcontext(session)
+    with context as active_session:
+        workbook = active_session.load(path, read_only=True)
         try:
             names = workbook.sheet_names()
         finally:
@@ -325,10 +350,11 @@ def run_sheet_list(args):
     return {"ok": True, "file": str(path), "sheets": names}
 
 
-def run_sheet_info(args):
+def run_sheet_info(args, session=None):
     path = validate_input(args.file)
-    with LibreOfficeSession() as session:
-        workbook = session.load(path, read_only=True)
+    context = LibreOfficeSession() if session is None else nullcontext(session)
+    with context as active_session:
+        workbook = active_session.load(path, read_only=True)
         try:
             sheets = sheet_information(workbook, args.sheet)
         finally:
@@ -356,12 +382,13 @@ def run_font_check(args):
     return result
 
 
-def run_find(args):
+def run_find(args, session=None):
     options = window_options(args)
     prepared_query = prepare_find_query(args.text, args.case_sensitive, args.regex)
     path = validate_input(args.file)
-    with LibreOfficeSession() as session:
-        workbook = session.load(path, read_only=True)
+    context = LibreOfficeSession() if session is None else nullcontext(session)
+    with context as active_session:
+        workbook = active_session.load(path, read_only=True)
         try:
             matches, truncated = find_cells(
                 workbook, args.text, args.sheet, options, args.look_in,
@@ -391,7 +418,7 @@ def run_find(args):
 
 
 # Dispatch one editing command through the shared transactional lifecycle.
-def run_edit(args):
+def run_edit(args, session=None):
     font_check = None
     requested_font = getattr(args, "font", None)
     if requested_font is not None:
@@ -473,7 +500,7 @@ def run_edit(args):
         formula_policy = formula_policy_for_edit(operation_name)
     result = edit_file(
         args.file, args.out, args.overwrite, operation,
-        formula_policy, args.expect_sha256,
+        formula_policy, args.expect_sha256, session,
     )
     result["operation"] = operation_name
     if font_check is not None:
@@ -493,12 +520,13 @@ def run_edit(args):
     return result
 
 
-def run_patch(args):
+def run_patch(args, session=None):
     document = load_patch(args.patch)
     try:
         result = edit_file(
             args.file, args.out, args.overwrite, patch_operation(document),
             formula_policy_for_patch(document["operations"]), args.expect_sha256,
+            session,
         )
     except Exception as exc:
         if hasattr(exc, "details"):
@@ -524,26 +552,63 @@ def run_patch(args):
     return result
 
 
+def dispatch_workbook_command(args, session=None):
+    if args.command == "view":
+        return run_view(args, session)
+    if args.command == "patch":
+        return run_patch(args, session)
+    if args.command == "sheet" and args.sheet_command == "list":
+        return run_sheet_list(args, session)
+    if args.command == "sheet" and args.sheet_command == "info":
+        return run_sheet_info(args, session)
+    if args.command == "find":
+        return run_find(args, session)
+    return run_edit(args, session)
+
+
+def run_daemon_command(args):
+    if args.daemon_command == "serve":
+        return serve_daemon()
+    if args.daemon_command == "start":
+        ensure_daemon()
+        result = daemon_status()
+    elif args.daemon_command == "status":
+        result = daemon_status()
+    else:
+        result = daemon_stop()
+    if getattr(args, "json", False):
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        if result.get("running"):
+            libreoffice = result.get("libreoffice", {})
+            print("ExcelTool daemon: 运行中")
+            print("LibreOffice: %s" % libreoffice.get("state", "unknown"))
+            print("Generation: %s" % libreoffice.get("generation", 0))
+        else:
+            print("ExcelTool daemon: 未运行")
+    return result
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if args.command == "font" and args.font_command == "check":
+        if args.command == "daemon":
+            result = run_daemon_command(args)
+            if args.daemon_command == "serve":
+                return result
+        elif args.command == "font" and args.font_command == "check":
             run_font_check(args)
         else:
             with workbook_command_lock():
-                if args.command == "view":
-                    run_view(args)
-                elif args.command == "patch":
-                    run_patch(args)
-                elif args.command == "sheet" and args.sheet_command == "list":
-                    run_sheet_list(args)
-                elif args.command == "sheet" and args.sheet_command == "info":
-                    run_sheet_info(args)
-                elif args.command == "find":
-                    run_find(args)
+                if args.no_daemon:
+                    dispatch_workbook_command(args)
                 else:
-                    run_edit(args)
+                    with DaemonLease() as lease:
+                        with LibreOfficeConnection(
+                            lease.uno["host"], lease.uno["port"]
+                        ) as session:
+                            dispatch_workbook_command(args, session)
         return 0
     except ExcelToolError as exc:
         payload = {"ok": False, "error": exc.message, "code": exc.code}

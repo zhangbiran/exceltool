@@ -12,7 +12,11 @@ LibreOffice 和 `python3-uno`。代价是存在外部进程依赖，保存时也
 ## 模块
 
 - `cli.py`：命令、参数、JSON、退出码。
-- `engine.py`：启动隔离 LibreOffice、UNO 连接、工作簿读写与低层操作。
+- `daemon.py` / `daemon_client.py`：用户级 LibreOffice 生命周期服务、实例发现和租约。
+- `daemon_protocol.py` / `daemon_runtime.py`：本机控制帧、运行目录、实例文件和锁。
+- `process_guard.py` / `process_management.py` / `windows_job.py`：Linux 存活 pipe
+  守护和 Windows Job Object 进程树所有权。
+- `engine.py`：启动隔离 LibreOffice、连接已有 UNO endpoint、工作簿读写与低层操作。
 - `operations.py`：查看、查找、矩阵/范围、sheet、行和列的用户语义。
 - `fonts.py`：在 Unix-like 系统通过 fontconfig、在 Windows 通过字体注册表精确检查
   请求字体与系统解析字体。
@@ -24,9 +28,14 @@ LibreOffice 和 `python3-uno`。代价是存在外部进程依赖，保存时也
 首版保持少量模块，避免为单一引擎建立复杂插件体系。若未来加入第二种引擎，再
 抽象公共接口。
 
-每次工作簿命令都会建立独立的 LibreOffice 进程与 UNO 用户配置。参数解析完成后，
-CLI 在校验工作簿输入之前取得当前操作系统用户的全局排他锁，并持有到命令分派、
-LibreOffice 关闭、临时资源清理、验证和发布全部结束。锁优先放在 `/run/user/<uid>`；
+默认路径由当前用户的轻量 daemon 拥有一个专属 LibreOffice 进程和隔离 profile。
+CLI 通过 daemon 维护的实例文件发现控制端点，以带 token、instance/build/install 身份的
+真实握手确认存活；实例文件和 PID 本身不是存活证明。CLI 在长控制连接上取得租约后
+直接连接 UNO，daemon 不解析工作簿命令、不代理标准输入输出。工作簿关闭并确认无残留组件后，
+健康 generation 可供下一条命令复用；空闲 300 秒后退出。
+
+参数解析完成后，CLI 在校验工作簿输入之前取得当前操作系统用户的全局排他锁，并持有到
+命令分派、工作簿关闭、验证与发布、租约释放全部结束。锁优先放在 `/run/user/<uid>`；
 该目录不可用时使用 `/tmp` 下仅当前用户可访问的 `exceltool-<uid>` 目录。锁文件
 可以长期存在，互斥状态由内核维护；Windows 使用当前用户临时目录中的锁文件和
 `msvcrt` 字节锁。进程正常退出、异常退出或被终止时，文件描述符关闭，锁自动释放。
@@ -108,3 +117,8 @@ sheet 的解析结果，不修改、保存或发布工作簿。
 - `6` 写后验证失败。
 
 错误不触发另一引擎、格式转换或伪成功。
+
+daemon 的完整控制协议、状态机、双平台进程所有权和故障语义见
+[轻量 Daemon 设计](DAEMON_DESIGN.md)。`--no-daemon` 显式保留每条命令独立启停的旧路径；
+编辑命令在 daemon 模式中于同一 generation 保存、关闭并从磁盘重开验证，一次性模式
+仍使用两个冷启动 session 作为隔离对照。

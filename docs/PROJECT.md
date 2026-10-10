@@ -33,6 +33,8 @@ ExcelTool 为人和 AI Agent 提供确定、可脚本化的 Excel CLI，避免�
 - `--out` 仅同格式另存，不承担格式转换。
 - Linux 与 Windows 原生环境使用同一命令语义；平台差异只限于 LibreOffice 启动、
   UNO、命令锁、字体发现、临时资源清理和启动入口。
+- 用户级轻量 daemon 在连续命令间复用专属 LibreOffice；CLI 直接连接 UNO，
+  daemon 只管理实例发现、租约、进程和空闲退出。
 
 ## 原则
 

@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from .errors import ExcelToolError, TargetError, UnsupportedError
+from .process_management import launch_owned_process
 
 try:
     import uno
@@ -39,15 +40,19 @@ def free_port():
 
 
 class LibreOfficeSession:
-    def __init__(self):
+    def __init__(self, guard_process_tree=False):
         self.process = None
         self.profile = None
         self.desktop = None
+        self.host = "127.0.0.1"
+        self.port = None
+        self.guard_process_tree = guard_process_tree
 
     def __enter__(self):
         if uno is None:
             raise UnsupportedError("缺少 Python UNO；请安装与 LibreOffice 匹配的 python3-uno")
         port = free_port()
+        self.port = port
         self.profile = tempfile.TemporaryDirectory(prefix="exceltool-lo-")
         profile_url = file_url(self.profile.name)
         accept = (
@@ -72,11 +77,8 @@ class LibreOfficeSession:
             environment["SAL_DISABLE_PRINTERLIST"] = "1"
             environment["SAL_DISABLE_DEFAULTPRINTER"] = "1"
         try:
-            self.process = subprocess.Popen(
-                command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                env=environment,
+            self.process = launch_owned_process(
+                command, environment, self.guard_process_tree
             )
         except OSError as exc:
             raise UnsupportedError("无法启动 LibreOffice: %s" % exc)
@@ -133,6 +135,15 @@ class LibreOfficeSession:
             raise ExcelToolError("无法创建工作簿")
         return Workbook(document, None)
 
+    def has_open_documents(self):
+        if self.desktop is None:
+            return False
+        try:
+            enumeration = self.desktop.getComponents().createEnumeration()
+            return bool(enumeration.hasMoreElements())
+        except Exception as exc:
+            raise ExcelToolError("无法检查 LibreOffice 残留组件: %s" % exc)
+
     def close(self):
         if self.desktop is not None:
             try:
@@ -152,6 +163,9 @@ class LibreOfficeSession:
                     self.process.wait()
             if self.process.stderr:
                 self.process.stderr.close()
+            close_process = getattr(self.process, "close", None)
+            if close_process is not None:
+                close_process()
             self.process = None
         if self.profile is not None:
             attempts = 100 if os.name == "nt" else 1
@@ -167,6 +181,50 @@ class LibreOfficeSession:
 
     def __exit__(self, exc_type, exc, traceback):
         self.close()
+
+
+class LibreOfficeConnection(LibreOfficeSession):
+    """A UNO connection that does not own or terminate LibreOffice."""
+
+    def __init__(self, host, port, attempts=None):
+        super().__init__(guard_process_tree=False)
+        self.host = host
+        self.port = int(port)
+        self.attempts = attempts
+
+    def __enter__(self):
+        if uno is None:
+            raise UnsupportedError("缺少 Python UNO；请安装与 LibreOffice 匹配的 python3-uno")
+        if self.host != "127.0.0.1" or not 1 <= self.port <= 65535:
+            raise ExcelToolError("LibreOffice UNO endpoint 无效")
+        local_context = uno.getComponentContext()
+        resolver = local_context.ServiceManager.createInstanceWithContext(
+            "com.sun.star.bridge.UnoUrlResolver", local_context
+        )
+        attempts = self.attempts
+        if attempts is None:
+            attempts = 200 if os.name == "nt" else 80
+        last_error = None
+        for _ in range(attempts):
+            try:
+                context = resolver.resolve(
+                    "uno:socket,host=%s,port=%d;urp;StarOffice.ComponentContext"
+                    % (self.host, self.port)
+                )
+                self.desktop = context.ServiceManager.createInstanceWithContext(
+                    "com.sun.star.frame.Desktop", context
+                )
+                return self
+            except Exception as exc:
+                last_error = exc
+                time.sleep(0.05)
+        self.desktop = None
+        raise ExcelToolError("LibreOffice 连接失败: %s" % (last_error or "连接超时"))
+
+    def close(self):
+        self.desktop = None
+        self.process = None
+        self.profile = None
 
 
 class Workbook:

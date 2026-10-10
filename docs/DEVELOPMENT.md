@@ -28,6 +28,12 @@
   LibreOffice 启动前取得当前用户的全局排他锁，并持有到命令返回与资源清理结束。
   竞争时只提示一次并等待，不对工作簿命令启动重试；Windows 可以为适配 `msvcrt`
   字节锁在锁实现内部做短间隔等待。进程退出依赖操作系统释放锁。
+- 默认工作簿命令必须在全局锁内取得 daemon 长连接租约，然后由 CLI 直接
+  连接 UNO；daemon 不得接收业务 argv 或代理输入输出。只有工作簿全部关闭且
+  组件检查无残留时才能干净释放；异常、断连或残留必须废弃当前 generation。
+- daemon 实例文件只是发现线索；存活判定必须使用控制握手并同时校验
+  token、instance_id、protocol、build 和 installation。Windows 进程树归 Job Object，Linux
+  进程树归存活 pipe 守护的独立进程组；禁止按进程名扫描用户的 LibreOffice。
 - 列宽只在显式 `col autofit` 中自适应；最大宽度按 1/100 mm 计算，往返验证允许
   `.xls/.xlsx` 最多 0.1 mm 的格式量化误差。
 - 列宽机器输出必须区分操作时 `width_mm` 和重开后 `actual_width_mm`；Patch 后续
@@ -77,5 +83,8 @@ LibreOffice 进程与临时用户配置必须由测试清理。
 退出、快速连续调用和免锁命令；原有外部修改 SHA 防护仍须保持有效。
 Windows 还必须覆盖 `msvcrt` 锁、`soffice.com`/UNO accept 参数、打印机环境变量、字体
 注册表精确匹配、UTF-8 启动器和短暂 profile 占用清理。
+daemon 测试还必须覆盖帧边界、损坏/陈旧实例文件、并发首启动、租约期间保活、
+干净复用、失败 generation 废弃、空闲退出、daemon 强杀后专属进程树清理，
+以及 `--no-daemon` 回归。Windows 目标环境按与 Linux 对齐的验收清单记录真实输出。
 
 未经用户明确要求，不 commit、push、创建远端或发布包。

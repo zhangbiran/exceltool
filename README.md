@@ -24,6 +24,20 @@ LibreOffice、UNO、验证和发布全部结束。若已有命令运行，新进
 `ExcelTool 正被其他任务使用，等待前一个任务完成……`，随后等待并自动继续；正常退出
 和异常终止都会由操作系统释放锁。`--help`、`--version` 和 `font check` 不使用该锁。
 
+工作簿命令默认自动使用当前用户的轻量 daemon：daemon 只管理一个专属
+LibreOffice 的启动、保活和关闭，CLI 仍直接连接 UNO 执行原有业务。每条命令会
+关闭自己打开的工作簿，健康的 LibreOffice 保留给后续命令；连续空闲 300 秒后
+daemon 和它创建的 LibreOffice 一起退出。运行状态和诊断入口：
+
+```bash
+./exceltool daemon start
+./exceltool daemon status --json
+./exceltool daemon stop
+./exceltool --no-daemon view --file book.xls --sheet Sheet1
+```
+
+`--no-daemon` 保留一次一启、一次一关的隔离路径，用于故障诊断和对照回归。
+
 调用方仍应串行执行命令，不要主动并发或在等待时启动重试；这可以保持资源占用、输入
 版本、发布顺序和验证结果明确。同一工作簿的多项连续修改使用一次 `patch`，多个工作簿
 按明确清单逐个处理。不要删除、替换或绕过工具的命令锁。

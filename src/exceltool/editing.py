@@ -38,7 +38,7 @@ def publish(source, destination):
 
 
 def edit_file(input_path, output_path, overwrite, operation,
-              formula_policy=None, expect_sha256=None):
+              formula_policy=None, expect_sha256=None, session=None):
     source = validate_input(input_path)
     input_sha256 = verify_input_sha256(source, expect_sha256)
     if output_path:
@@ -62,8 +62,8 @@ def edit_file(input_path, output_path, overwrite, operation,
         working = Path(temp_dir) / ("working" + source.suffix.lower())
         shutil.copy2(str(source), str(working))
         verify_source_unchanged(working, input_sha256)
-        with LibreOfficeSession() as session:
-            workbook = session.load(working)
+        def edit_and_save(active_session):
+            workbook = active_session.load(working)
             try:
                 original_formulas = workbook_formula_snapshot(workbook)
                 changes, verifier = operation(workbook)
@@ -91,8 +91,19 @@ def edit_file(input_path, output_path, overwrite, operation,
                 workbook.save()
             finally:
                 workbook.close()
-        with LibreOfficeSession() as session:
-            reopened = session.load(working, read_only=True)
+
+            return (
+                original_formulas,
+                planned_formulas,
+                normalized_string_results,
+                changes,
+                verifier,
+            )
+
+        def reopen_and_verify(active_session, edit_result):
+            (original_formulas, planned_formulas, normalized_string_results,
+             changes, verifier) = edit_result
+            reopened = active_session.load(working, read_only=True)
             try:
                 reopened_formulas = workbook_formula_snapshot(reopened)
                 assert_formula_snapshots(
@@ -108,6 +119,18 @@ def edit_file(input_path, output_path, overwrite, operation,
                 )
             finally:
                 reopened.close()
+            return changes, formula_report
+
+        if session is None:
+            with LibreOfficeSession() as edit_session:
+                edit_result = edit_and_save(edit_session)
+            with LibreOfficeSession() as verify_session:
+                changes, formula_report = reopen_and_verify(
+                    verify_session, edit_result
+                )
+        else:
+            edit_result = edit_and_save(session)
+            changes, formula_report = reopen_and_verify(session, edit_result)
 
         if destination == source:
             verify_source_unchanged(source, input_sha256)
