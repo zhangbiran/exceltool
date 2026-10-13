@@ -2,6 +2,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 from .daemon_protocol import PROTOCOL_VERSION, receive_message, send_message
@@ -19,6 +20,7 @@ from .errors import ExcelToolError
 
 CONNECT_TIMEOUT = 2.0
 START_TIMEOUT = 40.0
+WAIT_NOTICE_DELAY = 0.5
 
 
 def python_executable():
@@ -28,7 +30,9 @@ def python_executable():
     return executable
 
 
-def _request(instance, message_type, extra=None, keep_open=False):
+def _request(
+    instance, message_type, extra=None, keep_open=False, wait_notice=None
+):
     connection = socket.create_connection(
         (instance["host"], instance["port"]), timeout=CONNECT_TIMEOUT
     )
@@ -42,7 +46,21 @@ def _request(instance, message_type, extra=None, keep_open=False):
         if extra:
             message.update(extra)
         send_message(connection, message)
-        response = receive_message(connection)
+        if keep_open:
+            # The first acquire may need to cold-start LibreOffice.  Keep the
+            # short connect timeout for discovery, but allow the daemon start
+            # window while waiting for the acquired response on Windows.
+            connection.settimeout(START_TIMEOUT)
+        notice_timer = None
+        if wait_notice is not None:
+            notice_timer = threading.Timer(WAIT_NOTICE_DELAY, wait_notice)
+            notice_timer.daemon = True
+            notice_timer.start()
+        try:
+            response = receive_message(connection)
+        finally:
+            if notice_timer is not None:
+                notice_timer.cancel()
         if response is None:
             raise ExcelToolError("ExcelTool daemon 未返回响应")
         if response.get("type") == "error":
@@ -51,6 +69,7 @@ def _request(instance, message_type, extra=None, keep_open=False):
                 % (response.get("code", "internal_error"), response.get("message", "未知错误"))
             )
         if keep_open:
+            connection.settimeout(None)
             return connection, response
         return response
     except Exception:
@@ -127,11 +146,13 @@ def _request_stop(instance):
         return False
 
 
-def ensure_daemon(paths=None):
+def ensure_daemon(paths=None, progress=None):
     paths = paths or RuntimePaths()
     instance = read_instance(paths)
     if compatible_instance(instance):
         return instance
+    if progress is not None:
+        progress("正在启动或连接 ExcelTool daemon……")
     with locked(paths.start_lock):
         deadline = time.monotonic() + START_TIMEOUT
         stop_attempts = set()
@@ -162,20 +183,27 @@ def ensure_daemon(paths=None):
 
 
 class DaemonLease:
-    def __init__(self, paths=None):
+    def __init__(self, paths=None, progress=None):
         self.paths = paths or RuntimePaths()
+        self.progress = progress
         self.instance = None
         self.connection = None
         self.generation = None
         self.uno = None
 
     def __enter__(self):
-        self.instance = ensure_daemon(self.paths)
+        self.instance = ensure_daemon(self.paths, self.progress)
+        wait_notice = None
+        if self.progress is not None:
+            wait_notice = lambda: self.progress(
+                "正在等待 LibreOffice 启动并建立 UNO 连接……"
+            )
         connection, response = _request(
             self.instance,
             "acquire",
             {"client_pid": os.getpid()},
             keep_open=True,
+            wait_notice=wait_notice,
         )
         if response.get("type") != "acquired":
             connection.close()

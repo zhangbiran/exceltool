@@ -2,6 +2,7 @@ import json
 import socket
 import struct
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -88,6 +89,70 @@ class DaemonRuntimeTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertIsNone(read_instance(self.paths))
+
+    def test_acquire_uses_start_timeout_then_keeps_lease_connection_open(self):
+        connection = mock.Mock()
+        instance = {
+            "host": "127.0.0.1",
+            "port": 49152,
+            "instance_id": "instance",
+            "token": "token",
+        }
+        acquired = {
+            "type": "acquired",
+            "generation": 1,
+            "uno": {"transport": "socket", "host": "127.0.0.1", "port": 49153},
+        }
+        with mock.patch.object(
+            daemon_client.socket, "create_connection", return_value=connection
+        ) as create_connection, mock.patch.object(
+            daemon_client, "send_message"
+        ), mock.patch.object(
+            daemon_client, "receive_message", return_value=acquired
+        ):
+            returned, response = daemon_client._request(
+                instance, "acquire", {"client_pid": 123}, keep_open=True
+            )
+
+        create_connection.assert_called_once_with(
+            ("127.0.0.1", 49152), timeout=daemon_client.CONNECT_TIMEOUT
+        )
+        self.assertIs(returned, connection)
+        self.assertEqual(response, acquired)
+        self.assertEqual(
+            connection.settimeout.call_args_list,
+            [mock.call(daemon_client.START_TIMEOUT), mock.call(None)],
+        )
+        connection.close.assert_not_called()
+
+    def test_slow_acquire_reports_what_it_is_waiting_for(self):
+        connection = mock.Mock()
+        instance = {
+            "host": "127.0.0.1",
+            "port": 49152,
+            "instance_id": "instance",
+            "token": "token",
+        }
+        notice = mock.Mock()
+
+        def slow_response(_connection):
+            time.sleep(0.05)
+            return {"type": "acquired"}
+
+        with mock.patch.object(
+            daemon_client.socket, "create_connection", return_value=connection
+        ), mock.patch.object(
+            daemon_client, "send_message"
+        ), mock.patch.object(
+            daemon_client, "receive_message", side_effect=slow_response
+        ), mock.patch.object(
+            daemon_client, "WAIT_NOTICE_DELAY", 0.01
+        ):
+            daemon_client._request(
+                instance, "acquire", keep_open=True, wait_notice=notice
+            )
+
+        notice.assert_called_once_with()
 
 
 if __name__ == "__main__":

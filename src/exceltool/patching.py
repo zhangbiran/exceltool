@@ -7,6 +7,7 @@ from .fonts import inspect_font
 from .operations import (
     HARD_STYLE_PROPERTIES,
     COLUMN_WIDTH_TOLERANCE,
+    annotation_text,
     clear_range,
     col_autofit,
     col_copy,
@@ -267,7 +268,7 @@ class SheetVerificationError(VerificationError):
 
 
 # Capture the stable cell state that Patch must preserve across save and reopen.
-def cell_expectation(cell):
+def cell_expectation(cell, structural_snapshot=False):
     cell_type = cell.Type.value
     if cell_type == "VALUE":
         content = (cell_type, float(cell.Value))
@@ -293,10 +294,20 @@ def cell_expectation(cell):
                 }
                 names = tuple(slot_names[slot] for slot in required_font_slots(cell))
             for name in names:
+                # LibreOffice on Windows can expose a transient direct number
+                # format on empty cells created by row/column operations, then
+                # normalize it away when OOXML is saved. It is not stable file
+                # state and must not fail whole-sheet structural verification.
+                if (
+                    structural_snapshot
+                    and cell_type == "EMPTY"
+                    and name == "NumberFormat"
+                ):
+                    continue
                 properties[name] = getattr(cell, name)
     return {
         "content": content,
-        "comment": cell.Annotation.String,
+        "comment": annotation_text(cell),
         "cell_style": cell.CellStyle,
         "properties": properties,
     }
@@ -319,6 +330,22 @@ def matches_cell_expectation(cell, expected):
         elif actual_value != value:
             return False
     return True
+
+
+def cell_expectation_difference(cell, expected):
+    actual = cell_expectation(cell)
+    for key in ("content", "comment", "cell_style"):
+        if actual[key] != expected[key]:
+            return "%s: expected=%r, actual=%r" % (key, expected[key], actual[key])
+    for name, value in expected["properties"].items():
+        actual_value = getattr(cell, name)
+        if isinstance(value, float):
+            different = abs(float(actual_value) - value) > 0.01
+        else:
+            different = actual_value != value
+        if different:
+            return "%s: expected=%r, actual=%r" % (name, value, actual_value)
+    return "unknown difference"
 
 
 class VerificationPlan:
@@ -697,7 +724,9 @@ def full_sheet_snapshot(workbook, sheet_name, extra_columns=()):
             for col in range(max([columns] + [col + 1 for col in extra_columns]))
         },
         "cells": {
-            (row, col): cell_expectation(sheet.getCellByPosition(col, row))
+            (row, col): cell_expectation(
+                sheet.getCellByPosition(col, row), structural_snapshot=True
+            )
             for row in range(rows)
             for col in range(columns)
         },
@@ -725,8 +754,11 @@ def verify_sheet_snapshot(workbook, sheet_name, expected):
         cell = sheet.getCellByPosition(col, row)
         if not matches_cell_expectation(cell, signature):
             raise SheetVerificationError(
-                "patch 单元格验证失败: %s!%s%d"
-                % (sheet_name, column_name(col + 1), row + 1),
+                "patch 单元格验证失败: %s!%s%d (%s)"
+                % (
+                    sheet_name, column_name(col + 1), row + 1,
+                    cell_expectation_difference(cell, signature),
+                ),
                 row=row,
                 col=col,
             )

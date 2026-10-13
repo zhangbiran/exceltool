@@ -31,6 +31,11 @@ def create_fixture(path):
             workbook.close()
 
 
+def stderr_json(result):
+    lines = [line for line in result.stderr.splitlines() if line.strip()]
+    return json.loads(lines[-1])
+
+
 class DaemonIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="exceltool-daemon-integration-")
@@ -111,7 +116,7 @@ class DaemonIntegrationTests(unittest.TestCase):
             "view", "--file", str(workbook), "--sheet", "不存在",
             "--json", expected=(3,),
         )
-        self.assertFalse(json.loads(failed.stderr)["ok"])
+        self.assertFalse(stderr_json(failed)["ok"])
         self.assertEqual(self.status()["libreoffice"]["state"], "stopped")
 
         recovered = self.run_cli(

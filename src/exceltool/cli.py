@@ -44,6 +44,10 @@ from .ranges import column_name
 from .safety import formula_policy_for_edit, formula_policy_for_patch
 
 
+def report_progress(message):
+    print(message, file=sys.stderr, flush=True)
+
+
 class ExcelToolArgumentParser(argparse.ArgumentParser):
     def error(self, message):
         if "--json" in sys.argv[1:] or "--json-full" in sys.argv[1:]:
@@ -570,7 +574,7 @@ def run_daemon_command(args):
     if args.daemon_command == "serve":
         return serve_daemon()
     if args.daemon_command == "start":
-        ensure_daemon()
+        ensure_daemon(progress=report_progress)
         result = daemon_status()
     elif args.daemon_command == "status":
         result = daemon_status()
@@ -604,7 +608,7 @@ def main(argv=None):
                 if args.no_daemon:
                     dispatch_workbook_command(args)
                 else:
-                    with DaemonLease() as lease:
+                    with DaemonLease(progress=report_progress) as lease:
                         with LibreOfficeConnection(
                             lease.uno["host"], lease.uno["port"]
                         ) as session:

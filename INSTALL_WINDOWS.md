@@ -174,6 +174,9 @@ exceltool --no-daemon view --file '.\book.xls' --sheet 'Sheet1'
 默认命令会关闭工作簿但保留专属 LibreOffice，空闲 300 秒后两者退出。
 daemon 使用 Job Object 拥有它创建的 LibreOffice 进程树，不会扫描或结束用户手动
 打开的 LibreOffice。
+首次启动、旧实例切换或 LibreOffice 冷启动需要等待时，CLI 会在 stderr 显示正在连接
+daemon 或等待 UNO 就绪；`--json`/`--json-full` 的 stdout 不会混入这些提示。命令失败
+时，最终 JSON 错误是 stderr 最后一条非空行。
 
 ### `ModuleNotFoundError: No module named 'fcntl'`
 

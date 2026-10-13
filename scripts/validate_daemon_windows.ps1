@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string]$File,
     [string]$Sheet = "常量表",
@@ -11,7 +11,8 @@ $instanceFile = Join-Path $env:LOCALAPPDATA "ExcelTool\runtime\daemon.json"
 
 function Invoke-ExcelToolJson {
     param([string[]]$Arguments)
-    $output = & exceltool @Arguments 2>&1
+    # Progress remains visible on stderr; stdout stays a single JSON document.
+    $output = & exceltool @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "exceltool $($Arguments -join ' ') failed ($LASTEXITCODE): $output"
     }

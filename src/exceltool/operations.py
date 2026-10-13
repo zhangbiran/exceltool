@@ -37,6 +37,17 @@ def is_direct_property(cell, name):
     return getattr(state, "value", str(state)) == "DIRECT_VALUE"
 
 
+def is_meaningful_direct_property(cell, name):
+    if not is_direct_property(cell, name):
+        return False
+    # Windows LibreOffice may re-import an empty OOXML cell's default number
+    # format with DIRECT_VALUE state even though its value equals the document
+    # default. Treat only that value-equivalent marker as cleared.
+    if name == "NumberFormat":
+        return cell.NumberFormat != cell.getPropertyDefault(name)
+    return True
+
+
 def copy_style_signature(cell):
     return (
         cell.CellStyle,
@@ -211,6 +222,14 @@ def verify_font(cell, font=None, font_size=None):
     return True
 
 
+def annotation_text(cell):
+    annotation = cell.Annotation
+    if not annotation.Author and not annotation.Date:
+        return annotation.String
+    shape = annotation.AnnotationShape
+    return shape.String if shape is not None else annotation.String
+
+
 def required_font_slots(cell):
     text = cell.Formula if cell.Type.value == "FORMULA" else cell.String
     has_asian = any(
@@ -374,6 +393,9 @@ def clear_range(workbook, sheet_name, range_value, with_style=False):
                 float(cell.CharHeightAsian),
             )
             cell.clearContents(flags)
+            if with_style:
+                for name in HARD_STYLE_PROPERTIES:
+                    cell.setPropertyToDefault(name)
 
     def verify(reopened):
         target_sheet = reopened.sheet(sheet_name)
@@ -387,8 +409,15 @@ def clear_range(workbook, sheet_name, range_value, with_style=False):
                 cell.CharFontNameAsian != style[1] or abs(float(cell.CharHeightAsian) - style[2]) > 0.01
             ):
                 raise VerificationError("范围清空意外改变了样式")
-            if with_style and any(is_direct_property(cell, name) for name in HARD_STYLE_PROPERTIES):
-                raise VerificationError("范围清空未移除硬样式")
+            if with_style:
+                remaining = [
+                    name for name in HARD_STYLE_PROPERTIES
+                    if is_meaningful_direct_property(cell, name)
+                ]
+                if remaining:
+                    raise VerificationError(
+                        "范围清空未移除硬样式: %s" % ", ".join(remaining)
+                    )
 
     return {"sheet": sheet_name, "range": range_value, "with_style": with_style}, verify
 
@@ -414,7 +443,7 @@ def write_comment(workbook, sheet_name, cell_value, text):
         address = "%s%d" % (column_name(col + 1), row + 1)
         if content_signature(target) != expected_content:
             raise VerificationError("写批注意外改变了单元格内容: %s!%s" % (sheet_name, address))
-        if target.Annotation.String != text:
+        if annotation_text(target) != text:
             raise VerificationError("批注写后验证失败: %s!%s" % (sheet_name, address))
 
     return changes, verify

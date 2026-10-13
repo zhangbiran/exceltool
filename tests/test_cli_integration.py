@@ -9,8 +9,8 @@ from unittest import mock
 from pathlib import Path
 
 from exceltool.editing import edit_file
-from exceltool.engine import LibreOfficeSession
-from exceltool.engine import Workbook
+from exceltool.engine import LibreOfficeSession, Workbook
+from exceltool.operations import annotation_text
 from exceltool.errors import FormulaVerificationError, InputHashMismatchError
 from exceltool.safety import formula_policy_for_edit
 
@@ -71,6 +71,11 @@ def create_string_formula_fixture(path):
             workbook.save_as(path)
         finally:
             workbook.close()
+
+
+def stderr_json(result):
+    lines = [line for line in result.stderr.splitlines() if line.strip()]
+    return json.loads(lines[-1])
 
 
 class CliIntegrationTests(unittest.TestCase):
@@ -162,7 +167,7 @@ class CliIntegrationTests(unittest.TestCase):
         missing = self.run_cli(
             "view", "--file", str(xlsx), "--sheet", "Missing", "--json", expected=3
         )
-        self.assertFalse(json.loads(missing.stderr)["ok"])
+        self.assertFalse(stderr_json(missing)["ok"])
         self.assertNotIn("Traceback", missing.stderr)
         conflict = self.run_cli(
             "view", "--file", str(xlsx), "--sheet", "Data", "--tail", "2",
@@ -292,7 +297,7 @@ class CliIntegrationTests(unittest.TestCase):
                     "--expect-sha256", "0" * 64, "--out", str(blocked),
                     "--json", expected=3,
                 )
-                mismatch_payload = json.loads(mismatch.stderr)
+                mismatch_payload = stderr_json(mismatch)
                 self.assertEqual(mismatch_payload["expected_sha256"], "0" * 64)
                 self.assertEqual(mismatch_payload["actual_sha256"], source_sha256)
                 self.assertFalse(mismatch_payload["published"])
@@ -727,17 +732,17 @@ class CliIntegrationTests(unittest.TestCase):
         result = self.run_cli(
             "sheet", "add", "--file", str(source), "--name", "bad/name", "--out", str(output), "--json", expected=5
         )
-        self.assertFalse(json.loads(result.stderr)["ok"])
+        self.assertFalse(stderr_json(result)["ok"])
         self.assertNotIn("Traceback", result.stderr)
 
     def test_argument_error_is_json_when_requested(self):
         result = self.run_cli("write", "--json", expected=2)
-        payload = json.loads(result.stderr)
+        payload = stderr_json(result)
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["code"], 2)
 
         removed_cell = self.run_cli("cell", "set", "--json", expected=2)
-        self.assertIn("invalid choice", json.loads(removed_cell.stderr)["error"])
+        self.assertIn("invalid choice", stderr_json(removed_cell)["error"])
 
     def test_comment_command_and_patch_for_both_formats(self):
         for extension in (".xlsx", ".xls"):
@@ -762,7 +767,7 @@ class CliIntegrationTests(unittest.TestCase):
                 def assert_comment(workbook):
                     cell = workbook.sheet("Data").getCellRangeByName("C2")
                     self.assertEqual(cell.Formula, "=A2*2")
-                    self.assertEqual(cell.Annotation.String, "首次复核\n请确认")
+                    self.assertEqual(annotation_text(cell), "首次复核\n请确认")
 
                 self.inspect(commented, assert_comment)
                 patch_file.write_text(
@@ -785,7 +790,9 @@ class CliIntegrationTests(unittest.TestCase):
                 self.inspect(
                     patched,
                     lambda workbook: self.assertEqual(
-                        workbook.sheet("Data").getCellRangeByName("C2").Annotation.String,
+                        annotation_text(
+                            workbook.sheet("Data").getCellRangeByName("C2")
+                        ),
                         "最终批注",
                     ),
                 )
@@ -1134,7 +1141,7 @@ class CliIntegrationTests(unittest.TestCase):
             "patch", "--file", str(source), "--patch", str(patch_file), "--json",
             expected=3,
         )
-        payload = json.loads(failure.stderr)
+        payload = stderr_json(failure)
         self.assertEqual(payload["operation"], "patch")
         self.assertEqual(payload["failed_operation"], {
             "index": 1, "id": "write-fails", "op": "write",
@@ -1150,7 +1157,7 @@ class CliIntegrationTests(unittest.TestCase):
             "patch", "--file", str(source), "--patch", str(invalid_top), "--json",
             expected=3,
         )
-        invalid_payload = json.loads(invalid.stderr)
+        invalid_payload = stderr_json(invalid)
         self.assertIn("顶层不支持字段: file", invalid_payload["error"])
         self.assertFalse(invalid_payload["published"])
         self.assertNotIn("failed_operation", invalid_payload)
@@ -1170,7 +1177,7 @@ class CliIntegrationTests(unittest.TestCase):
             "patch", "--file", str(source), "--patch", str(output_patch),
             "--out", str(existing_output), "--json", expected=3,
         )
-        exists_payload = json.loads(exists.stderr)
+        exists_payload = stderr_json(exists)
         self.assertIn("--overwrite", exists_payload["error"])
         self.assertFalse(exists_payload["published"])
         self.assertEqual(existing_output.read_bytes(), existing_bytes)
@@ -1195,7 +1202,7 @@ class CliIntegrationTests(unittest.TestCase):
             "patch", "--file", str(source), "--patch", str(font_patch),
             "--out", str(font_output), "--json", expected=6,
         )
-        font_payload = json.loads(font_failure.stderr)
+        font_payload = stderr_json(font_failure)
         self.assertEqual(font_payload["failed_operation"], {
             "index": 0, "id": "font-fails", "op": "write",
         })
