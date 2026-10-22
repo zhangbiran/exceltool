@@ -145,7 +145,7 @@ def build_parser():
     add_file(view)
     view.add_argument("--sheet", help="sheet 名；省略则查看全部")
     add_window_selection(view)
-    view.add_argument("--include-style", action="store_true", help="在 --json-full 中包含字体和字号")
+    view.add_argument("--include-style", action="store_true", help="在 --json-full 中包含字体、字号、字体颜色和背景色")
     view_json = view.add_mutually_exclusive_group()
     view_json.add_argument("--json", action="store_true", help="输出可回写的纯二维 JSON 数组")
     view_json.add_argument("--json-full", action="store_true", help="输出带文件、sheet 和范围元数据的 JSON")
@@ -165,11 +165,13 @@ def build_parser():
     patch.add_argument("--patch", required=True, help="UTF-8 patch JSON 文件")
     add_edit_output(patch)
 
-    style = commands.add_parser("style", help="设置范围字体和字号")
+    style = commands.add_parser("style", help="设置范围字体、字号、字体颜色和背景色")
     add_file_sheet(style)
     style.add_argument("--range", required=True, dest="cell_range", help="范围或单元格，如 A1:F10 或 B3")
     style.add_argument("--font", help="字体名称")
     style.add_argument("--font-size", type=float, help="字号")
+    style.add_argument("--font-color", help="字体颜色，格式为 #RRGGBB")
+    style.add_argument("--background-color", help="背景色，格式为 #RRGGBB")
     add_edit_output(style)
 
     clear = commands.add_parser("clear", help="清空范围内容")
@@ -444,7 +446,8 @@ def run_edit(args, session=None):
     elif args.command == "style":
         operation_name = "style"
         operation = lambda book: style_range(
-            book, args.sheet, args.cell_range, args.font, args.font_size
+            book, args.sheet, args.cell_range, args.font, args.font_size,
+            args.font_color, args.background_color,
         )
         formula_policy = formula_policy_for_edit(operation_name)
     elif args.command == "clear":

@@ -111,7 +111,7 @@ daemon 或 LibreOffice 不能立即就绪时，CLI 会在 stderr 输出当前等
 指定一个 sheet 时，输出包含 `file`、`sheet`、`range`、`begin` 和 `values`；省略
 sheet 时输出 `{file, sheets}`，每个 sheet 独立包含范围和 values。
 
-需要独立检查字体和字号时增加 `--include-style`：
+需要独立检查字体、字号、字体颜色和背景色时增加 `--include-style`：
 
 ```bash
 ./exceltool view --file book.xls --sheet Sheet1 --range A1:C3 \
@@ -119,7 +119,8 @@ sheet 时输出 `{file, sheets}`，每个 sheet 独立包含范围和 values。
 ```
 
 输出增加与 `values` 对齐的二维 `styles`，每个单元格分别列出 `western`、
-`asian`、`complex` 三个字体槽及字号。字体写后验证按单元格实际文字脚本检查相关
+`asian`、`complex` 三个字体槽、字号、`font_color` 和 `background_color`。未设置的
+颜色为 `null`，已设置时使用大写 `#RRGGBB`。字体写后验证按单元格实际文字脚本检查相关
 槽：拉丁字母/数字检查 Western，中日韩文字检查 Asian，阿拉伯/希伯来文字检查
 Complex；结果仍完整报告三槽，便于识别 LibreOffice 的回退。`--include-style` 必须与 `--json-full`
 一起使用，避免破坏可回写的裸二维 JSON。
@@ -363,12 +364,17 @@ stdin 与 view 管道：
 
 ### 范围样式与清空
 
-只修改字体和字号，不改变内容或其他样式：
+只修改明确提供的字体、字号、字体颜色或背景色，不改变内容和未指定样式：
 
 ```bash
 ./exceltool style --file book.xls --sheet Sheet1 --range A1:F10 \
-  --font "微软雅黑" --font-size 12
+  --font "微软雅黑" --font-size 12 \
+  --font-color "#FF0000" --background-color "#00FF00"
 ```
+
+字体颜色和背景色只接受 `#RRGGBB`，命令行中应加引号，避免 `#` 被 shell 当作注释。
+结果中的 `changes.actual_font_color` 和 `changes.actual_background_color` 是保存并
+重新打开工作簿后读取的实际颜色。
 
 清空内容并保留样式：
 
@@ -467,7 +473,7 @@ v1 对顶层和操作字段执行严格校验，未知字段会失败，以便�
 
 ```json
 {"op":"write","sheet":"任务","begin":"A10","values":[[1001,"任务一",true],[],[1003,null,"=A3*2","'=普通文本"]],"font":"Microsoft YaHei","font_size":10}
-{"op":"style","sheet":"任务","range":"A10:K10","font":"Microsoft YaHei","font_size":10}
+{"op":"style","sheet":"任务","range":"A10:K10","font":"Microsoft YaHei","font_size":10,"font_color":"#FF0000","background_color":"#00FF00"}
 {"op":"clear","sheet":"任务","range":"A10:K10","with_style":false}
 {"op":"comment","sheet":"任务","cell":"D10","text":"由负责人确认"}
 {"op":"row.insert","sheet":"任务","before":10,"count":1}
@@ -487,7 +493,7 @@ v1 对顶层和操作字段执行严格校验，未知字段会失败，以便�
 
 - `write` 的 `[]` 跳过整行，`null` 清空内容并保留样式，未提供的行尾不修改；
   `=...` 是公式，`'=...` 是以等号开头的普通文本；`font`、`font_size` 可选。
-- `style` 至少提供 `font` 或 `font_size`。
+- `style` 至少提供 `font`、`font_size`、`font_color` 或 `background_color`；颜色只接受 `#RRGGBB`。
 - `clear.with_style` 默认 `false`。
 - `comment` 写入或替换一个单元格的非空批注文本。
 - `row.insert.count` 默认 `1`。

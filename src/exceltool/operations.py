@@ -15,6 +15,7 @@ HARD_STYLE_PROPERTIES = (
     "CharWeight",
     "CharWeightAsian",
     "CharWeightComplex",
+    "CharColor",
     "CellBackColor",
     "NumberFormat",
 )
@@ -23,6 +24,7 @@ HARD_STYLE_PROPERTIES = (
 # round-trip delta is normally a few 1/100 mm even when the logical width is
 # unchanged.
 COLUMN_WIDTH_TOLERANCE = 10
+COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
 def validate_font_size(font_size):
@@ -30,6 +32,47 @@ def validate_font_size(font_size):
         return
     if not math.isfinite(float(font_size)) or float(font_size) <= 0:
         raise TargetError("字体大小必须是有限的正数")
+
+
+def normalize_background_color(background_color):
+    if background_color is None:
+        return None
+    if (
+        not isinstance(background_color, str)
+        or not COLOR_PATTERN.fullmatch(background_color)
+    ):
+        raise TargetError("背景色必须使用 #RRGGBB 格式")
+    return background_color.upper()
+
+
+def normalize_font_color(font_color):
+    if font_color is None:
+        return None
+    if (
+        not isinstance(font_color, str)
+        or not COLOR_PATTERN.fullmatch(font_color)
+    ):
+        raise TargetError("字体颜色必须使用 #RRGGBB 格式")
+    return font_color.upper()
+
+
+def background_color_value(background_color):
+    normalized = normalize_background_color(background_color)
+    return None if normalized is None else int(normalized[1:], 16)
+
+
+def font_color_value(font_color):
+    normalized = normalize_font_color(font_color)
+    return None if normalized is None else int(normalized[1:], 16)
+
+
+def format_background_color(value):
+    value = int(value)
+    return None if value < 0 else "#%06X" % value
+
+
+def format_font_color(value):
+    return format_background_color(value)
 
 
 def is_direct_property(cell, name):
@@ -60,6 +103,7 @@ def copy_style_signature(cell):
         float(cell.CharWeight),
         float(cell.CharWeightAsian),
         float(cell.CharWeightComplex),
+        int(cell.CharColor),
         int(cell.CellBackColor),
         int(cell.NumberFormat),
     )
@@ -77,6 +121,8 @@ def cell_style(cell):
             "asian": float(cell.CharHeightAsian),
             "complex": float(cell.CharHeightComplex),
         },
+        "font_color": format_font_color(cell.CharColor),
+        "background_color": format_background_color(cell.CellBackColor),
     }
 
 
@@ -209,6 +255,22 @@ def apply_font(cell, font=None, font_size=None):
         target.CharHeightComplex = float(font_size)
 
 
+def apply_style(
+    cell, font=None, font_size=None, font_color=None, background_color=None,
+):
+    apply_font(cell, font, font_size)
+    color_value = font_color_value(font_color)
+    if color_value is not None:
+        target = cell
+        if cell.Type.value == "TEXT" and cell.String:
+            target = cell.createTextCursor()
+            target.gotoEnd(True)
+        target.CharColor = color_value
+    color_value = background_color_value(background_color)
+    if color_value is not None:
+        cell.CellBackColor = color_value
+
+
 def verify_font(cell, font=None, font_size=None):
     if font is not None:
         actual = cell_style(cell)["font"]
@@ -220,6 +282,18 @@ def verify_font(cell, font=None, font_size=None):
     ):
         return False
     return True
+
+
+def verify_style(
+    cell, font=None, font_size=None, font_color=None, background_color=None,
+):
+    if not verify_font(cell, font, font_size):
+        return False
+    color_value = font_color_value(font_color)
+    if color_value is not None and int(cell.CharColor) != color_value:
+        return False
+    color_value = background_color_value(background_color)
+    return color_value is None or int(cell.CellBackColor) == color_value
 
 
 def annotation_text(cell):
@@ -344,9 +418,16 @@ def write_matrix(workbook, sheet_name, begin, matrix, font=None, font_size=None)
     return changes, verify
 
 
-def style_range(workbook, sheet_name, range_value, font=None, font_size=None):
-    if font is None and font_size is None:
-        raise TargetError("style 至少指定 --font 或 --font-size")
+def style_range(
+    workbook, sheet_name, range_value, font=None, font_size=None,
+    font_color=None, background_color=None,
+):
+    if all(value is None for value in (font, font_size, background_color, font_color)):
+        raise TargetError(
+            "style 至少指定 --font、--font-size、--font-color 或 --background-color"
+        )
+    background_color = normalize_background_color(background_color)
+    font_color = normalize_font_color(font_color)
     start_row, end_row, start_col, end_col = cell_range(range_value if ":" in range_value else "%s:%s" % (range_value, range_value))
     sheet = workbook.sheet(sheet_name)
     contents = {}
@@ -354,9 +435,16 @@ def style_range(workbook, sheet_name, range_value, font=None, font_size=None):
         for col in range(start_col, end_col):
             cell = sheet.getCellByPosition(col, row)
             contents[(row, col)] = content_signature(cell)
-            apply_font(cell, font, font_size)
+            apply_style(cell, font, font_size, font_color, background_color)
 
-    changes = {"sheet": sheet_name, "range": range_value, "font": font, "font_size": font_size}
+    changes = {
+        "sheet": sheet_name,
+        "range": range_value,
+        "font": font,
+        "font_size": font_size,
+        "font_color": font_color,
+        "background_color": background_color,
+    }
 
     def verify(reopened):
         target_sheet = reopened.sheet(sheet_name)
@@ -365,16 +453,33 @@ def style_range(workbook, sheet_name, range_value, font=None, font_size=None):
             address = "%s%d" % (column_name(col + 1), row + 1)
             if content_signature(cell) != expected_content:
                 raise VerificationError("样式操作改变了单元格内容: %s!%s" % (sheet_name, address))
-            if not verify_font(cell, font, font_size):
+            if not verify_style(cell, font, font_size, font_color, background_color):
                 raise VerificationError(
-                    "样式写后验证失败: %s!%s；%s"
-                    % (sheet_name, address, font_verification_error(cell, font, font_size))
+                    "样式写后验证失败: %s!%s；%s；请求字体颜色=%s，实际字体颜色=%s；"
+                    "请求背景色=%s，实际背景色=%s"
+                    % (
+                        sheet_name, address, font_verification_error(cell, font, font_size),
+                        font_color if font_color is not None else "未修改",
+                        format_font_color(cell.CharColor),
+                        background_color if background_color is not None else "未修改",
+                        format_background_color(cell.CellBackColor),
+                    )
                 )
         if font is not None and contents:
             first_row, first_col = next(iter(contents))
             changes["actual_font"] = cell_style(
                 target_sheet.getCellByPosition(first_col, first_row)
             )["font"]
+        if font_color is not None and contents:
+            first_row, first_col = next(iter(contents))
+            changes["actual_font_color"] = cell_style(
+                target_sheet.getCellByPosition(first_col, first_row)
+            )["font_color"]
+        if background_color is not None and contents:
+            first_row, first_col = next(iter(contents))
+            changes["actual_background_color"] = cell_style(
+                target_sheet.getCellByPosition(first_col, first_row)
+            )["background_color"]
 
     return changes, verify
 

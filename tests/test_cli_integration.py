@@ -874,12 +874,18 @@ class CliIntegrationTests(unittest.TestCase):
                 )
                 style_result = self.run_cli(
                     "style", "--file", str(from_file), "--sheet", "Data", "--range", "A1:D2",
-                    "--font", TEST_FONT, "--font-size", "16", "--out", str(styled), "--json",
+                    "--font", TEST_FONT, "--font-size", "16",
+                    "--font-color", "#ff0000",
+                    "--background-color", "#00ff00", "--out", str(styled), "--json",
                 )
                 style_payload = json.loads(style_result.stdout)
                 self.assertTrue(style_payload["font_check"]["exact"])
                 self.assertEqual(style_payload["changes"]["actual_font"]["western"], TEST_FONT)
                 self.assertEqual(style_payload["changes"]["actual_font"]["asian"], TEST_FONT)
+                self.assertEqual(style_payload["changes"]["font_color"], "#FF0000")
+                self.assertEqual(style_payload["changes"]["actual_font_color"], "#FF0000")
+                self.assertEqual(style_payload["changes"]["background_color"], "#00FF00")
+                self.assertEqual(style_payload["changes"]["actual_background_color"], "#00FF00")
                 styled_view = self.run_cli(
                     "view", "--file", str(styled), "--sheet", "Data", "--range", "D2:D2",
                     "--json-full", "--include-style",
@@ -890,6 +896,8 @@ class CliIntegrationTests(unittest.TestCase):
                 self.assertEqual(literal_style["font"]["western"], TEST_FONT)
                 self.assertEqual(literal_style["font"]["asian"], TEST_FONT)
                 self.assertEqual(set(literal_style["font_size"].values()), {16.0})
+                self.assertEqual(literal_style["font_color"], "#FF0000")
+                self.assertEqual(literal_style["background_color"], "#00FF00")
                 self.run_cli(
                     "clear", "--file", str(styled), "--sheet", "Data", "--range", "A2:B2",
                     "--out", str(cleared), "--json",
@@ -974,6 +982,18 @@ class CliIntegrationTests(unittest.TestCase):
         )
         self.assertIn("有限的正数", invalid_size.stderr)
         self.assertFalse(output.exists())
+        invalid_background = self.run_cli(
+            "style", "--file", str(source), "--sheet", "Data", "--range", "A1",
+            "--background-color", "green", "--out", str(output), "--json", expected=3,
+        )
+        self.assertIn("#RRGGBB", invalid_background.stderr)
+        self.assertFalse(output.exists())
+        invalid_font_color = self.run_cli(
+            "style", "--file", str(source), "--sheet", "Data", "--range", "A1",
+            "--font-color", "red", "--out", str(output), "--json", expected=3,
+        )
+        self.assertIn("#RRGGBB", invalid_font_color.stderr)
+        self.assertFalse(output.exists())
         legacy = self.run_cli(
             "clear", "--file", str(source), "--sheet", "Data", "--range", "A1", "--in-place", "--json",
             expected=2,
@@ -1045,6 +1065,8 @@ class CliIntegrationTests(unittest.TestCase):
                                 {
                                     "id": "style", "op": "style", "sheet": "Data",
                                     "range": "A3:D3", "font_size": 11,
+                                    "font_color": "#0000ff",
+                                    "background_color": "#ffff00",
                                 },
                                 {
                                     "id": "clear", "op": "clear", "sheet": "Data",
@@ -1090,6 +1112,8 @@ class CliIntegrationTests(unittest.TestCase):
                     self.assertEqual(data.getCellRangeByName("D3").String, "=普通文本")
                     self.assertEqual(data.getCellRangeByName("B3").CharFontNameAsian, TEST_FONT)
                     self.assertAlmostEqual(data.getCellRangeByName("A3").CharHeightAsian, 11.0)
+                    self.assertEqual(data.getCellRangeByName("A3").CharColor, 0x0000FF)
+                    self.assertEqual(data.getCellRangeByName("A3").CellBackColor, 0xFFFF00)
                     self.assertEqual(data.getCellRangeByName("A4").Value, 1)
                     self.assertEqual(data.getCellRangeByName("B4").String, "Alpha")
                     self.assertEqual(data.getCellRangeByName("C4").Formula, "=A4*2")

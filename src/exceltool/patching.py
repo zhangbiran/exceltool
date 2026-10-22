@@ -21,6 +21,8 @@ from .operations import (
     sheet_delete,
     sheet_rename,
     style_range,
+    normalize_background_color,
+    normalize_font_color,
     required_font_slots,
     write_comment,
     write_matrix,
@@ -30,7 +32,10 @@ from .ranges import cell_range, cell_ref, col_range, column_name, column_number,
 
 OPERATION_FIELDS = {
     "write": {"id", "op", "sheet", "begin", "values", "font", "font_size"},
-    "style": {"id", "op", "sheet", "range", "font", "font_size"},
+    "style": {
+        "id", "op", "sheet", "range", "font", "font_size", "font_color",
+        "background_color",
+    },
     "clear": {"id", "op", "sheet", "range", "with_style"},
     "comment": {"id", "op", "sheet", "cell", "text"},
     "row.insert": {"id", "op", "sheet", "before", "count"},
@@ -166,6 +171,12 @@ def validate_operation(operation):
             )
     if "font_size" in normalized:
         validate_font_size_value(normalized["font_size"])
+    if "background_color" in normalized:
+        normalized["background_color"] = normalize_background_color(
+            normalized["background_color"]
+        )
+    if "font_color" in normalized:
+        normalized["font_color"] = normalize_font_color(normalized["font_color"])
 
     if op == "write":
         require_string(normalized, "begin")
@@ -174,8 +185,13 @@ def validate_operation(operation):
     elif op == "style":
         require_string(normalized, "range")
         cell_range_value(normalized["range"])
-        if "font" not in normalized and "font_size" not in normalized:
-            raise TargetError("style 至少提供 font 或 font_size")
+        if not any(
+            field in normalized
+            for field in ("font", "font_size", "font_color", "background_color")
+        ):
+            raise TargetError(
+                "style 至少提供 font、font_size、font_color 或 background_color"
+            )
     elif op == "clear":
         require_string(normalized, "range")
         cell_range_value(normalized["range"])
@@ -255,6 +271,7 @@ STYLE_PROPERTY_GROUPS = (
     ("CharFontName", "CharFontNameAsian", "CharFontNameComplex"),
     ("CharHeight", "CharHeightAsian", "CharHeightComplex"),
     ("CharWeight", "CharWeightAsian", "CharWeightComplex"),
+    ("CharColor",),
     ("CellBackColor",),
     ("NumberFormat",),
 )
@@ -788,7 +805,8 @@ def execute_operation(workbook, operation):
     if op == "style":
         return style_range(
             workbook, operation["sheet"], operation["range"], operation.get("font"),
-            operation.get("font_size"),
+            operation.get("font_size"), operation.get("font_color"),
+            operation.get("background_color"),
         )
     if op == "clear":
         return clear_range(
