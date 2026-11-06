@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .engine import LibreOfficeSession
 from .errors import TargetError, UnsupportedError
+from .ooxml import normalize_xlsx_default_grid_color
 from .safety import (
     assert_formula_snapshots,
     formula_verification_report,
@@ -91,6 +92,9 @@ def edit_file(input_path, output_path, overwrite, operation,
                 workbook.save()
             finally:
                 workbook.close()
+
+            if source.suffix.lower() == ".xlsx":
+                normalize_xlsx_default_grid_color(working)
 
             return (
                 original_formulas,

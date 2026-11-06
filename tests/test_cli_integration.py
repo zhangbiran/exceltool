@@ -5,12 +5,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest import mock
 from pathlib import Path
 
 from exceltool.editing import edit_file
 from exceltool.engine import LibreOfficeSession, Workbook
 from exceltool.operations import annotation_text
+from exceltool.ooxml import normalize_xlsx_default_grid_color
 from exceltool.errors import FormulaVerificationError, InputHashMismatchError
 from exceltool.safety import formula_policy_for_edit
 
@@ -112,6 +114,32 @@ class CliIntegrationTests(unittest.TestCase):
                 return callback(workbook)
             finally:
                 workbook.close()
+
+    def test_xlsx_edit_normalizes_redundant_default_grid_color(self):
+        source = self.directory / "grid-color.xlsx"
+        output = self.directory / "grid-color-edited.xlsx"
+        create_fixture(source)
+
+        def no_op(workbook):
+            return {"normalized": True}, lambda reopened: None
+
+        with mock.patch(
+            "exceltool.editing.normalize_xlsx_default_grid_color",
+            wraps=normalize_xlsx_default_grid_color,
+        ) as normalize:
+            result = edit_file(source, output, False, no_op)
+
+        self.assertTrue(result["verified"])
+        normalize.assert_called_once()
+        with zipfile.ZipFile(str(output), "r") as archive:
+            worksheet_xml = [
+                archive.read(name)
+                for name in archive.namelist()
+                if name.startswith("xl/worksheets/") and name.endswith(".xml")
+            ]
+        for data in worksheet_xml:
+            self.assertNotIn(b'defaultGridColor="true"', data)
+            self.assertNotIn(b'colorId="64"', data)
 
     def test_view_compatibility_and_errors(self):
         xlsx = self.directory / "view.xlsx"
